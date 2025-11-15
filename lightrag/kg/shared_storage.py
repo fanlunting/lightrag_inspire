@@ -75,6 +75,9 @@ _last_mp_cleanup_time: Optional[float] = None
 
 _initialized = None
 
+# Default workspace for backward compatibility
+_default_workspace: Optional[str] = None
+
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
 _init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
@@ -1270,12 +1273,29 @@ def initialize_share_data(workers: int = 1):
     _initialized = True
 
 
-async def initialize_pipeline_status():
+async def initialize_pipeline_status(workspace: str = ""):
     """
     Initialize pipeline namespace with default values.
+
+    Args:
+        workspace: Optional workspace identifier for multi-tenant isolation.
+                   If empty string, uses the default workspace set by
+                   set_default_workspace(). If no default is set, uses
+                   global "pipeline_status" namespace.
+
     This function is called during FASTAPI lifespan for each worker.
     """
-    pipeline_namespace = await get_namespace_data("pipeline_status", first_init=True)
+    # Backward compatibility: use default workspace if not provided
+    if not workspace:
+        workspace = get_default_workspace()
+
+    # Construct namespace (following GraphDB pattern)
+    if workspace:
+        namespace = f"{workspace}:pipeline"
+    else:
+        namespace = "pipeline_status"  # Global namespace for backward compatibility
+
+    pipeline_namespace = await get_namespace_data(namespace, first_init=True)
 
     async with get_internal_lock():
         # Check if already initialized by checking for required fields
@@ -1298,7 +1318,9 @@ async def initialize_pipeline_status():
                 "history_messages": history_messages,  # 使用共享列表对象
             }
         )
-        direct_log(f"Process {os.getpid()} Pipeline namespace initialized")
+        direct_log(
+            f"Process {os.getpid()} Pipeline namespace '{namespace}' initialized"
+        )
 
 
 async def get_update_flag(namespace: str):
@@ -1430,7 +1452,12 @@ async def get_namespace_data(
     async with get_internal_lock():
         if namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
-            if namespace == "pipeline_status" and not first_init:
+            # Supports both global "pipeline_status" and workspace-specific "{workspace}:pipeline"
+            is_pipeline = namespace == "pipeline_status" or namespace.endswith(
+                ":pipeline"
+            )
+
+            if is_pipeline and not first_init:
                 # Check if pipeline_status should have been initialized but wasn't
                 # This helps users understand they need to call initialize_pipeline_status()
                 raise PipelineNotInitializedError(namespace)
@@ -1534,3 +1561,33 @@ def finalize_share_data():
     _async_locks = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
+
+
+def set_default_workspace(workspace: str):
+    """
+    Set default workspace for backward compatibility.
+
+    This allows initialize_pipeline_status() to automatically use the correct
+    workspace when called without parameters, maintaining compatibility with
+    legacy code that doesn't pass workspace explicitly.
+
+    Args:
+        workspace: Workspace identifier (may be empty string for global namespace)
+    """
+    global _default_workspace
+    _default_workspace = workspace
+    direct_log(
+        f"Default workspace set to: '{workspace}' (empty means global)",
+        level="DEBUG",
+    )
+
+
+def get_default_workspace() -> str:
+    """
+    Get default workspace for backward compatibility.
+
+    Returns:
+        The default workspace string. Empty string means global namespace.
+    """
+    global _default_workspace
+    return _default_workspace if _default_workspace is not None else ""
