@@ -116,6 +116,7 @@ async def print_stream(stream):
 
 
 async def main():
+    # base code from lightrag_openai_demo.py
     try:
         # Clear old data files
         files_to_delete = [
