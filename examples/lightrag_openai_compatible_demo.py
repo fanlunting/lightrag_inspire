@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import logging.config
+from pathlib import Path
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
@@ -11,7 +12,12 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"), override=True)
+load_dotenv(
+    dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
+    override=True,
+)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LOG_DIR = PROJECT_ROOT / "log"
 WORKING_DIR = "./dickens"
 
 
@@ -24,14 +30,12 @@ def configure_logging():
         logger_instance.handlers = []
         logger_instance.filters = []
 
-    # Get log directory path from environment variable or use current directory
-    log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(
-        os.path.join(log_dir, "lightrag_compatible_demo.log")
-    )
+    # Use absolute log directory alongside repo root folders (lightrag/examples/log)
+    log_dir = Path(os.getenv("LOG_DIR", DEFAULT_LOG_DIR)).resolve()
+    log_file_path = log_dir / "lightrag_compatible_demo.log"
 
     print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
@@ -58,7 +62,7 @@ def configure_logging():
                 "file": {
                     "formatter": "detailed",
                     "class": "logging.handlers.RotatingFileHandler",
-                    "filename": log_file_path,
+                    "filename": str(log_file_path),
                     "maxBytes": log_max_bytes,
                     "backupCount": log_backup_count,
                     "encoding": "utf-8",
@@ -98,7 +102,7 @@ def configure_logging():
             log_file_path,
             maxBytes=log_max_bytes,
             backupCount=log_backup_count,
-            encoding="utf-8"
+            encoding="utf-8",
         )
         file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
         file_handler.setLevel(logging.INFO)
