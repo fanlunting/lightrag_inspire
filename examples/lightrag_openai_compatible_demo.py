@@ -1,18 +1,17 @@
 import os
+import sys
 import asyncio
 import inspect
 import logging
 import logging.config
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import openai_complete_if_cache
-from lightrag.llm.ollama import ollama_embed
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=".env", override=False)
-
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"), override=True)
 WORKING_DIR = "./dickens"
 
 
@@ -75,8 +74,43 @@ def configure_logging():
         }
     )
 
-    # Set the logger level to INFO
+    # Ensure logger has handlers after dictConfig
+    # Sometimes dictConfig doesn't properly attach handlers, so we verify and add if needed
+    # The logger imported from lightrag.utils is the same instance as logging.getLogger("lightrag")
     logger.setLevel(logging.INFO)
+    logger.propagate = False
+    
+    # Check if handlers exist, if not create them
+    has_console = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) 
+                      and not isinstance(h, logging.handlers.RotatingFileHandler) 
+                      for h in logger.handlers)
+    has_file = any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers)
+    
+    if not has_console:
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        console_handler.setLevel(logging.INFO)
+        logger.addHandler(console_handler)
+        print(f"Added console handler to logger. Total handlers: {len(logger.handlers)}")
+    
+    if not has_file:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file_path,
+            maxBytes=log_max_bytes,
+            backupCount=log_backup_count,
+            encoding="utf-8"
+        )
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        file_handler.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        print(f"Added file handler to logger. Total handlers: {len(logger.handlers)}")
+    
+    # Verify logger configuration
+    print(f"Logger level: {logger.level}, Effective level: {logger.getEffectiveLevel()}")
+    print(f"Logger handlers count: {len(logger.handlers)}")
+    for i, handler in enumerate(logger.handlers):
+        print(f"  Handler {i}: {type(handler).__name__}, level: {handler.level}")
+    
     # Enable verbose debug if needed
     set_verbose_debug(os.getenv("VERBOSE_DEBUG", "false").lower() == "true")
 
@@ -93,7 +127,7 @@ async def llm_model_func(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key=os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY"),
+        api_key=os.getenv("LLM_BINDING_API_KEY", "sk-db442f07feb340bcba320c7be940a034"),
         base_url=os.getenv("LLM_BINDING_HOST", "https://api.deepseek.com"),
         **kwargs,
     )
@@ -106,18 +140,34 @@ async def print_stream(stream):
 
 
 async def initialize_rag():
+    custom_entity_types = [
+        "方剂",
+        "方剂别名",
+        "方剂功用",
+        "主治病症",
+        "出处典籍",
+        "症状",
+        "证型",
+    ]
+
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
-            func=lambda texts: ollama_embed(
+            func=lambda texts: openai_embed(
                 texts,
-                embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
-                host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
+                model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5"),
+                base_url=os.getenv("EMBEDDING_BINDING_HOST", "https://api.siliconflow.cn/v1"),
+                api_key=os.getenv("EMBEDDING_BINDING_API_KEY", "sk-ojwiwjclbocrgccaspwdoxymwlcgbkrtefthwpqgpdgdqyby"),
             ),
         ),
+        addon_params={
+            "language": os.getenv("SUMMARY_LANGUAGE", "Chinese"),  # 设置语言为中文
+            "entity_types": custom_entity_types,  # 传入自定义的 entity_types
+        },
+        graph_storage="Neo4JStorage",
     )
 
     await rag.initialize_storages()
@@ -147,6 +197,9 @@ async def main():
 
         # Initialize RAG instance
         rag = await initialize_rag()
+        print("api_key: "+ os.getenv("LLM_BINDING_API_KEY"))
+        # 打印 graph_storage 的类型
+        print("graph_storage: " + rag.graph_storage)
 
         # Test embedding function
         test_text = ["This is a test string for embedding."]
@@ -158,9 +211,14 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
+        import json
+        with open("/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json", "r", encoding="utf-8") as f:
+            json_data = json.load(f)
+        content = json.dumps(json_data, ensure_ascii=False)  
+        print("before insert", type(content))
 
+        await rag.ainsert(content, file_paths="/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json")
+        print("after insert")
         # Perform naive search
         print("\n=====================")
         print("Query mode: naive")

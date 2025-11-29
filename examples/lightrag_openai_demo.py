@@ -2,6 +2,9 @@ import os
 import asyncio
 import logging
 import logging.config
+
+import sys
+sys.path.append('/Users/mac/Downloads/lightrag_inspire')
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
@@ -92,13 +95,13 @@ async def initialize_rag():
 
 async def main():
     # Check if OPENAI_API_KEY environment variable exists
-    if not os.getenv("OPENAI_API_KEY"):
-        print(
-            "Error: OPENAI_API_KEY environment variable is not set. Please set this variable before running the program."
-        )
-        print("You can set the environment variable by running:")
-        print("  export OPENAI_API_KEY='your-openai-api-key'")
-        return  # Exit the async function
+    # if not os.getenv("OPENAI_API_KEY"):
+    #     print(
+    #         "Error: OPENAI_API_KEY environment variable is not set. Please set this variable before running the program."
+    #     )
+    #     print("You can set the environment variable by running:")
+    #     print("  export OPENAI_API_KEY='your-openai-api-key'")
+    #     return  # Exit the async function
 
     try:
         # Clear old data files
@@ -131,7 +134,7 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
+        with open("lightrag/药材.json", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
 
         # Perform naive search

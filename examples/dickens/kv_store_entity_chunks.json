@@ -1,0 +1,984 @@
+{
+  "败草散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 3,
+    "update_time": 1764345467,
+    "_id": "败草散"
+  },
+  "败毒散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 3,
+    "update_time": 1764345467,
+    "_id": "败毒散"
+  },
+  "解疮毒，收湿气": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 3,
+    "update_time": 1764345469,
+    "_id": "解疮毒，收湿气"
+  },
+  "痘疮过搔成疮，脓血淋漓": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175439,
+    "_id": "痘疮过搔成疮，脓血淋漓"
+  },
+  "世医得效方": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 2,
+    "update_time": 1764175439,
+    "_id": "世医得效方"
+  },
+  "种痘新书": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175439,
+    "_id": "种痘新书"
+  },
+  "柏黛散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345469,
+    "_id": "柏黛散"
+  },
+  "洞天奥旨": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175439,
+    "_id": "洞天奥旨"
+  },
+  "凉血解毒，清热燥湿": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345469,
+    "_id": "凉血解毒，清热燥湿"
+  },
+  "日晒疮及火瘢疮": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175441,
+    "_id": "日晒疮及火瘢疮"
+  },
+  "患处红肿疼痛，坚硬未溃": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345473,
+    "_id": "患处红肿疼痛，坚硬未溃"
+  },
+  "安魂散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345471,
+    "_id": "安魂散"
+  },
+  "辨证录": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175441,
+    "_id": "辨证录"
+  },
+  "补土泻火，消痰逐邪": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345472,
+    "_id": "补土泻火，消痰逐邪"
+  },
+  "肺气虚而中邪": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345472,
+    "_id": "肺气虚而中邪"
+  },
+  "目见鬼神，口出胡言": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175442,
+    "_id": "目见鬼神，口出胡言"
+  },
+  "满身疼痛，呼号不已": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175443,
+    "_id": "满身疼痛，呼号不已"
+  },
+  "柏蛤散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345472,
+    "_id": "柏蛤散"
+  },
+  "医学入门": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345475,
+    "_id": "医学入门"
+  },
+  "清热燥湿": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345472,
+    "_id": "清热燥湿"
+  },
+  "下疳湿疮": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345473,
+    "_id": "下疳湿疮"
+  },
+  "安乐散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345475,
+    "_id": "安乐散"
+  },
+  "大生要旨": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345476,
+    "_id": "大生要旨"
+  },
+  "妇人子淋，属肾虚热不能司化者": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345476,
+    "_id": "妇人子淋，属肾虚热不能司化者"
+  },
+  "安全散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345476,
+    "_id": "安全散"
+  },
+  "魏氏家藏方": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345477,
+    "_id": "魏氏家藏方"
+  },
+  "安神止惊": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345477,
+    "_id": "安神止惊"
+  },
+  "慢惊后，余未退，精神不爽": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345477,
+    "_id": "慢惊后，余未退，精神不爽"
+  },
+  "败毒流气散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345477,
+    "_id": "败毒流气散"
+  },
+  "仁斋直指方论·附遗": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345478,
+    "_id": "仁斋直指方论·附遗"
+  },
+  "透表泄热，散结消痈，排脓止痛，祛风胜湿，宣散风热，行气宽中，益气补血": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345477,
+    "_id": "透表泄热，散结消痈，排脓止痛，祛风胜湿，宣散风热，行气宽中，益气补血"
+  },
+  "痈疽": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345478,
+    "_id": "痈疽"
+  },
+  "柏根散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345478,
+    "_id": "柏根散"
+  },
+  "鸡峰普济方": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345479,
+    "_id": "鸡峰普济方"
+  },
+  "无名恶疮": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345479,
+    "_id": "无名恶疮"
+  },
+  "败毒平胃散": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 3,
+    "update_time": 1764345479,
+    "_id": "败毒平胃散"
+  },
+  "症因脉治": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345479,
+    "_id": "症因脉治"
+  },
+  "风寒湿痢兼阳明": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175446,
+    "_id": "风寒湿痢兼阳明"
+  },
+  "蜂窝组织炎": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175446,
+    "_id": "蜂窝组织炎"
+  },
+  "毛囊炎": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175446,
+    "_id": "毛囊炎"
+  },
+  "疖": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175447,
+    "_id": "疖"
+  },
+  "乳腺炎": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "乳腺炎"
+  },
+  "热毒壅结": {
+    "chunk_ids": [
+      "chunk-0fdeff4eb115b82e70838b17582b38bc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "热毒壅结"
+  },
+  "白丁香散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "白丁香散"
+  },
+  "独圣散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "独圣散"
+  },
+  "白丁散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "白丁散"
+  },
+  "独胜散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "独胜散"
+  },
+  "外科精义": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175448,
+    "_id": "外科精义"
+  },
+  "通血脉，下乳汁": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "通血脉，下乳汁"
+  },
+  "妇人吹乳": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "妇人吹乳"
+  },
+  "身热": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "身热"
+  },
+  "头痛": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "头痛"
+  },
+  "寒热": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "寒热"
+  },
+  "胸乳肿硬": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "胸乳肿硬"
+  },
+  "艾煎茯苓散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175449,
+    "_id": "艾煎茯苓散"
+  },
+  "陈艾汤": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175450,
+    "_id": "陈艾汤"
+  },
+  "医方考": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175450,
+    "_id": "医方考"
+  },
+  "养心利湿，利气止汗": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175450,
+    "_id": "养心利湿，利气止汗"
+  },
+  "别处无汗，独心孔一片有汗者": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175451,
+    "_id": "别处无汗，独心孔一片有汗者"
+  },
+  "安虫散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "安虫散"
+  },
+  "鹤虱散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "鹤虱散"
+  },
+  "田氏保婴集": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "田氏保婴集"
+  },
+  "杀虫止痛": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "杀虫止痛"
+  },
+  "小儿虫痛": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "小儿虫痛"
+  },
+  "安东散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "安东散"
+  },
+  "卫生鸿宝": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175452,
+    "_id": "卫生鸿宝"
+  },
+  "肝胃气": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345463,
+    "_id": "肝胃气"
+  },
+  "艾煎散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345465,
+    "_id": "艾煎散"
+  },
+  "嵩崖尊生全书": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175453,
+    "_id": "嵩崖尊生全书"
+  },
+  "心汗": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345465,
+    "_id": "心汗"
+  },
+  "艾胶散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345465,
+    "_id": "艾胶散"
+  },
+  "普济方": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175453,
+    "_id": "普济方"
+  },
+  "温中散寒，养血止血": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345465,
+    "_id": "温中散寒，养血止血"
+  },
+  "卒吐血": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345465,
+    "_id": "卒吐血"
+  },
+  "安蛔散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345467,
+    "_id": "安蛔散"
+  },
+  "安蛔丸": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345467,
+    "_id": "安蛔丸"
+  },
+  "乌梅散": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345467,
+    "_id": "乌梅散"
+  },
+  "张氏医通": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175455,
+    "_id": "张氏医通"
+  },
+  "清热安蛔": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345467,
+    "_id": "清热安蛔"
+  },
+  "吐蛔热证": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345467,
+    "_id": "吐蛔热证"
+  },
+  "痘疮过搔成疮": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345469,
+    "_id": "痘疮过搔成疮"
+  },
+  "脓血淋漓": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc",
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 2,
+    "update_time": 1764345473,
+    "_id": "脓血淋漓"
+  },
+  "妇人天癸过期，经脉不调": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175456,
+    "_id": "妇人天癸过期，经脉不调"
+  },
+  "小肠热极": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175456,
+    "_id": "小肠热极"
+  },
+  "胆道蛔虫": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175456,
+    "_id": "胆道蛔虫"
+  },
+  "肠寄生虫性腹痛": {
+    "chunk_ids": [
+      "chunk-009a54d6b45873e93607f7d99d5da3cc"
+    ],
+    "count": 1,
+    "update_time": 1764175457,
+    "_id": "肠寄生虫性腹痛"
+  },
+  "《鸡峰普济方》卷二十二": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345480,
+    "_id": "《鸡峰普济方》卷二十二"
+  },
+  "平胃败毒散": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345479,
+    "_id": "平胃败毒散"
+  },
+  "《症因脉治》卷四": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345480,
+    "_id": "《症因脉治》卷四"
+  },
+  "风寒湿痢兼阳明胃病": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526"
+    ],
+    "count": 1,
+    "update_time": 1764175457,
+    "_id": "风寒湿痢兼阳明胃病"
+  },
+  "饱闷不食": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526"
+    ],
+    "count": 1,
+    "update_time": 1764175458,
+    "_id": "饱闷不食"
+  },
+  "呕吐恶心": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526"
+    ],
+    "count": 1,
+    "update_time": 1764175458,
+    "_id": "呕吐恶心"
+  },
+  "Ji Feng Pu Ji Fang": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526"
+    ],
+    "count": 1,
+    "update_time": 1764175458,
+    "_id": "Ji Feng Pu Ji Fang"
+  },
+  "Zheng Yin Mai Zhi": {
+    "chunk_ids": [
+      "chunk-51a1345ed6198c4fc345985d398e6526"
+    ],
+    "count": 1,
+    "update_time": 1764175458,
+    "_id": "Zheng Yin Mai Zhi"
+  },
+  "《卫生鸿宝》卷一": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345463,
+    "_id": "《卫生鸿宝》卷一"
+  },
+  "《嵩崖尊生全书》卷八": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345465,
+    "_id": "《嵩崖尊生全书》卷八"
+  },
+  "思虑多汗亦多": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345465,
+    "_id": "思虑多汗亦多"
+  },
+  "《普济方》卷一八八": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345465,
+    "_id": "《普济方》卷一八八"
+  },
+  "《张氏医通》卷十四": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345467,
+    "_id": "《张氏医通》卷十四"
+  },
+  "《世医得效方》卷十一": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345469,
+    "_id": "《世医得效方》卷十一"
+  },
+  "《洞天奥旨》卷十三": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345469,
+    "_id": "《洞天奥旨》卷十三"
+  },
+  "日晒疮": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345470,
+    "_id": "日晒疮"
+  },
+  "火瘢疮": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345470,
+    "_id": "火瘢疮"
+  },
+  "《辨证录》卷十二": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345471,
+    "_id": "《辨证录》卷十二"
+  },
+  "《医学入门》卷八": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806",
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 2,
+    "update_time": 1764345472,
+    "_id": "《医学入门》卷八"
+  },
+  "目见鬼神": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345473,
+    "_id": "目见鬼神"
+  },
+  "口出胡言": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345474,
+    "_id": "口出胡言"
+  },
+  "弓矢射中": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345475,
+    "_id": "弓矢射中"
+  },
+  "刀斧砍伤": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345474,
+    "_id": "刀斧砍伤"
+  },
+  "满身疼痛": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345475,
+    "_id": "满身疼痛"
+  },
+  "呼号不已": {
+    "chunk_ids": [
+      "chunk-504b3cc6f435a63b99f5e4cc824c1806"
+    ],
+    "count": 1,
+    "update_time": 1764345475,
+    "_id": "呼号不已"
+  },
+  "风寒湿痢兼阳明胃病，饱闷不食，呕吐恶心": {
+    "chunk_ids": [
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 1,
+    "update_time": 1764345479,
+    "_id": "风寒湿痢兼阳明胃病，饱闷不食，呕吐恶心"
+  },
+  "《大生要旨》卷二": {
+    "chunk_ids": [
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 1,
+    "update_time": 1764345479,
+    "_id": "《大生要旨》卷二"
+  },
+  "《魏氏家藏方》卷十": {
+    "chunk_ids": [
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 1,
+    "update_time": 1764345480,
+    "_id": "《魏氏家藏方》卷十"
+  },
+  "《仁斋直指方论·附遗》卷二十二": {
+    "chunk_ids": [
+      "chunk-f7eff86dddd3f0e97598496151b1ccf0"
+    ],
+    "count": 1,
+    "update_time": 1764345480,
+    "_id": "《仁斋直指方论·附遗》卷二十二"
+  }
+}
