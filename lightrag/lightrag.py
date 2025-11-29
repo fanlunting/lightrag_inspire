@@ -24,6 +24,8 @@ from typing import (
     Dict,
     Union,
 )
+from difflib import SequenceMatcher
+from collections import Counter
 from lightrag.prompt import PROMPTS
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.constants import (
@@ -1058,6 +1060,280 @@ class LightRAG:
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
             node_label, max_depth, max_nodes
         )
+
+    def merge_graphs(
+        self,
+        source_graph_tags: str | list[str],
+        compare_attributes: list[str] | None = None,
+        similarity_threshold: float = 0.9,
+        new_graph_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Synchronously merge graphs distinguished by graph_tag."""
+
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.amerge_graphs(
+                source_graph_tags=source_graph_tags,
+                compare_attributes=compare_attributes,
+                similarity_threshold=similarity_threshold,
+                new_graph_tag=new_graph_tag,
+            )
+        )
+
+    async def amerge_graphs(
+        self,
+        source_graph_tags: str | list[str],
+        compare_attributes: list[str] | None = None,
+        similarity_threshold: float = 0.9,
+        new_graph_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Merge nodes/edges from specific graph_tag values into a new tagged graph.
+
+        Args:
+            source_graph_tags: A single graph_tag or a list of tags that should be merged.
+            compare_attributes: Optional list of node attributes to merge when differences exist.
+                Defaults to ["entity_type", "description", "file_path", "source_id"].
+            similarity_threshold: Ratio in [0, 1]. Nodes whose names exceed this ratio
+                will be considered the same entity even if their names differ.
+            new_graph_tag: Optional override for the generated tag. When omitted the first
+                source tag plus a UTC timestamp is used (e.g. "default_20250101120000").
+
+        Returns:
+            dict: Summary statistics about the merge (graph_tag, counts, etc.).
+        """
+
+        if isinstance(source_graph_tags, str):
+            normalized_tags = [source_graph_tags.strip()]
+        else:
+            normalized_tags = [tag.strip() for tag in source_graph_tags if tag and tag.strip()]
+
+        if not normalized_tags:
+            raise ValueError("source_graph_tags must contain at least one non-empty tag")
+
+        similarity_threshold = max(0.0, min(1.0, similarity_threshold))
+
+        compare_attributes = (
+            compare_attributes
+            if compare_attributes
+            else ["entity_type", "description", "file_path", "source_id"]
+        )
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        tag_prefix = normalized_tags[0] if normalized_tags[0] else "graph"
+        sanitized_prefix = tag_prefix.replace(" ", "_")
+        new_graph_tag = new_graph_tag or f"{sanitized_prefix}_{timestamp_suffix}"
+
+        if self._storages_status != StoragesStatus.INITIALIZED:
+            raise RuntimeError(
+                "Storages must be initialized before merging graphs. "
+                "Call `await rag.initialize_storages()` first."
+            )
+
+        def _split_values(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                parts = [p.strip() for p in value.split(GRAPH_FIELD_SEP)]
+                return [p for p in parts if p]
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            return [str(value).strip()]
+
+        def _extract_tags(entity: dict[str, Any]) -> set[str]:
+            tags = set(_split_values(entity.get("graph_tag")))
+            return tags if tags else {"default"}
+
+        def _has_target_tag(entity: dict[str, Any]) -> bool:
+            tags = _extract_tags(entity)
+            return any(tag in normalized_tags for tag in tags)
+
+        def _join_unique(values: list[str]) -> str:
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for value in values:
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                ordered.append(value)
+            return GRAPH_FIELD_SEP.join(ordered)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+            edges = await self.chunk_entity_relation_graph.get_all_edges()
+
+            filtered_nodes = [node for node in nodes if _has_target_tag(node)]
+            if not filtered_nodes:
+                raise ValueError(
+                    f"No nodes found for graph_tag(s): {', '.join(normalized_tags)}"
+                )
+
+            clusters: dict[str, dict[str, Any]] = {}
+            canonical_mapping: dict[str, str] = {}
+
+            def _find_cluster(name_lower: str) -> str | None:
+                if name_lower in clusters:
+                    return name_lower
+                best_key = None
+                best_score = 0.0
+                for existing_key in clusters.keys():
+                    score = SequenceMatcher(None, name_lower, existing_key).ratio()
+                    if score >= similarity_threshold and score > best_score:
+                        best_key = existing_key
+                        best_score = score
+                return best_key
+
+            for node in filtered_nodes:
+                node_id = (
+                    node.get("entity_id")
+                    or node.get("entity_name")
+                    or node.get("id")
+                    or ""
+                )
+                normalized_name = node_id.strip()
+                if not normalized_name:
+                    continue
+                lowered_name = normalized_name.lower()
+                cluster_key = _find_cluster(lowered_name)
+                if cluster_key is None:
+                    cluster_key = lowered_name
+                    clusters[cluster_key] = {
+                        "canonical_name": normalized_name,
+                        "attributes": {attr: [] for attr in compare_attributes},
+                        "entity_type_counter": Counter(),
+                        "graph_tags": set(),
+                        "source_nodes": set(),
+                        "template": dict(node),
+                    }
+                cluster = clusters[cluster_key]
+                canonical_mapping[node_id] = cluster["canonical_name"]
+                cluster["source_nodes"].add(node_id)
+                cluster["graph_tags"].update(_extract_tags(node))
+
+                for attr in compare_attributes:
+                    values = _split_values(node.get(attr))
+                    if values:
+                        cluster["attributes"].setdefault(attr, [])
+                        cluster["attributes"][attr].extend(values)
+
+                entity_type_values = _split_values(node.get("entity_type"))
+                if entity_type_values:
+                    cluster["entity_type_counter"].update(entity_type_values)
+
+            aggregated_nodes: list[tuple[str, dict[str, Any]]] = []
+            for cluster in clusters.values():
+                payload = dict(cluster["template"])
+                payload["entity_id"] = cluster["canonical_name"]
+                payload["graph_tag"] = new_graph_tag
+                payload["merged_from_graph_tags"] = _join_unique(
+                    list(cluster["graph_tags"])
+                )
+                payload["merged_from_entities"] = _join_unique(
+                    list(cluster["source_nodes"])
+                )
+                payload["updated_at"] = int(time.time())
+
+                for attr, values in cluster["attributes"].items():
+                    if not values:
+                        continue
+                    payload[attr] = _join_unique(values)
+
+                if cluster["entity_type_counter"]:
+                    payload["entity_type"] = cluster["entity_type_counter"].most_common(1)[
+                        0
+                    ][0]
+
+                aggregated_nodes.append((cluster["canonical_name"], payload))
+
+            filtered_edges = []
+            for edge in edges:
+                src = edge.get("source")
+                tgt = edge.get("target")
+                if not src or not tgt:
+                    continue
+                if src not in canonical_mapping or tgt not in canonical_mapping:
+                    continue
+                if not _has_target_tag(edge):
+                    continue
+                filtered_edges.append(edge)
+
+            edge_attributes = ["description", "keywords", "source_id", "file_path"]
+            aggregated_edges: dict[tuple[str, str], dict[str, Any]] = {}
+
+            for edge in filtered_edges:
+                src_canonical = canonical_mapping[edge["source"]]
+                tgt_canonical = canonical_mapping[edge["target"]]
+                if src_canonical == tgt_canonical:
+                    continue
+                sorted_pair = tuple(sorted((src_canonical, tgt_canonical)))
+                entry = aggregated_edges.setdefault(
+                    sorted_pair,
+                    {
+                        "graph_tags": set(),
+                        "weights": [],
+                        "source_edges": set(),
+                        "attributes": {attr: [] for attr in edge_attributes},
+                    },
+                )
+                entry["graph_tags"].update(_extract_tags(edge))
+                entry["source_edges"].add(f"{edge['source']}->{edge['target']}")
+                try:
+                    entry["weights"].append(float(edge.get("weight", 1.0)))
+                except (TypeError, ValueError):
+                    entry["weights"].append(1.0)
+
+                for attr in edge_attributes:
+                    entry["attributes"].setdefault(attr, [])
+                    entry["attributes"][attr].extend(_split_values(edge.get(attr)))
+
+            # Persist merged nodes
+            for canonical_name, payload in aggregated_nodes:
+                await self.chunk_entity_relation_graph.upsert_node(canonical_name, payload)
+
+            # Persist merged edges
+            for (src, tgt), data in aggregated_edges.items():
+                edge_payload = {
+                    "graph_tag": new_graph_tag,
+                    "merged_from_graph_tags": _join_unique(list(data["graph_tags"])),
+                    "merged_from_relations": _join_unique(list(data["source_edges"])),
+                    "updated_at": int(time.time()),
+                }
+
+                for attr, values in data["attributes"].items():
+                    if values:
+                        edge_payload[attr] = _join_unique(values)
+
+                if data["weights"]:
+                    edge_payload["weight"] = sum(data["weights"]) / len(data["weights"])
+
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    edge_payload,
+                )
+
+            await self.chunk_entity_relation_graph.index_done_callback()
+
+        summary = {
+            "graph_tag": new_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "nodes_scanned": len(filtered_nodes),
+            "nodes_written": len(aggregated_nodes),
+            "edges_scanned": len(filtered_edges),
+            "edges_written": len(aggregated_edges),
+        }
+
+        logger.info(
+            "Merged graph_tag(s) %s into %s | nodes %s -> %s | edges %s -> %s",
+            normalized_tags,
+            new_graph_tag,
+            summary["nodes_scanned"],
+            summary["nodes_written"],
+            summary["edges_scanned"],
+            summary["edges_written"],
+        )
+
+        return summary
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         # Direct imports for default storage implementations
