@@ -451,12 +451,16 @@ class NetworkXStorage(BaseGraphStorage):
                 continue
 
             edge_data = dict(subgraph.edges[edge])
+            edge_type = (
+                edge_data.get("relationship_type")
+                or edge_data.get("type")
+                or "DIRECTED"
+            )
 
-            # Create edge with complete information
             result.edges.append(
                 KnowledgeGraphEdge(
                     id=edge_id,
-                    type="DIRECTED",
+                    type=edge_type,
                     source=str(source),
                     target=str(target),
                     properties=edge_data,

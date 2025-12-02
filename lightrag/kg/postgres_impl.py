@@ -4361,12 +4361,14 @@ class PGGraphStorage(BaseGraphStorage):
                 sorted_pair = tuple(sorted([current_entity_id, neighbor_entity_id]))
 
                 # Create edge object
+                properties = rel["properties"]
+                edge_type = properties.get("relationship_type") or rel["label"]
                 edge = KnowledgeGraphEdge(
                     id=edge_id,
-                    type=rel["label"],
+                    type=edge_type,
                     source=source_id,
                     target=target_id,
-                    properties=rel["properties"],
+                    properties=properties,
                 )
 
                 if neighbor_internal_id in visited_node_ids:
@@ -4500,12 +4502,14 @@ class PGGraphStorage(BaseGraphStorage):
                         edge = result["r"]
                         edge_id = str(edge["id"])
                         if edge_id not in edges_dict:
+                            properties = edge["properties"]
+                            edge_type = properties.get("relationship_type") or edge["label"]
                             edges_dict[edge_id] = KnowledgeGraphEdge(
                                 id=edge_id,
-                                type=edge["label"],
+                                type=edge_type,
                                 source=str(edge["start_id"]),
                                 target=str(edge["end_id"]),
-                                properties=edge["properties"],
+                                properties=properties,
                             )
 
                 kg = KnowledgeGraph(

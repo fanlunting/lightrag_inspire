@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import re
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -486,6 +487,20 @@ async def _handle_single_relationship_extraction(
         # Process relationship description with same cleaning pipeline
         edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
 
+        # Derive relationship type from first keyword (LLM generated) fallback to description
+        def _sanitize_relation_type(value: str) -> str:
+            sanitized = re.sub(r"[^0-9A-Za-z_]", "_", value.upper()).strip("_")
+            if sanitized and sanitized[0].isdigit():
+                sanitized = f"REL_{sanitized}"
+            return sanitized or "RELATED_TO"
+
+        raw_relation_type = ""
+        if edge_keywords:
+            raw_relation_type = edge_keywords.split(",")[0].strip()
+        if not raw_relation_type and edge_description:
+            raw_relation_type = edge_description.split(" ")[0].strip("：:,，")
+        relationship_type = _sanitize_relation_type(raw_relation_type) if raw_relation_type else "RELATED_TO"
+
         edge_source_id = chunk_key
         weight = (
             float(record_attributes[-1].strip('"').strip("'"))
@@ -499,6 +514,7 @@ async def _handle_single_relationship_extraction(
             weight=weight,
             description=edge_description,
             keywords=edge_keywords,
+            relationship_type=relationship_type,
             source_id=edge_source_id,
             file_path=file_path,
             timestamp=timestamp,
@@ -1878,6 +1894,7 @@ async def _merge_edges_then_upsert(
     already_description = []
     already_keywords = []
     already_file_paths = []
+    already_relation_types = []
 
     # 1. Get existing edge data from graph storage
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
@@ -1912,6 +1929,9 @@ async def _merge_edges_then_upsert(
                         already_edge["keywords"], [GRAPH_FIELD_SEP]
                     )
                 )
+
+            if already_edge.get("relationship_type"):
+                already_relation_types.append(already_edge["relationship_type"])
 
     new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 
@@ -2013,6 +2033,17 @@ async def _merge_edges_then_upsert(
             )
     # Join all unique keywords with commas
     keywords = ",".join(sorted(all_keywords))
+
+    relation_types = [
+        dp.get("relationship_type")
+        for dp in edges_data
+        if dp.get("relationship_type")
+    ]
+    relation_types.extend(rt for rt in already_relation_types if rt)
+    if relation_types:
+        relationship_type = Counter(relation_types).most_common(1)[0][0]
+    else:
+        relationship_type = "RELATED_TO"
 
     # 7. Deduplicate by description, keeping first occurrence in the same document
     unique_edges = {}
@@ -2325,6 +2356,7 @@ async def _merge_edges_then_upsert(
             weight=weight,
             description=description,
             keywords=keywords,
+            relationship_type=relationship_type,
             source_id=source_id,
             file_path=file_path,
             created_at=edge_created_at,
@@ -2337,6 +2369,7 @@ async def _merge_edges_then_upsert(
         tgt_id=tgt_id,
         description=description,
         keywords=keywords,
+        relationship_type=relationship_type,
         source_id=source_id,
         file_path=file_path,
         created_at=edge_created_at,
@@ -2357,7 +2390,7 @@ async def _merge_edges_then_upsert(
             logger.debug(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
-        rel_content = f"{keywords}\t{src_id}\n{tgt_id}\n{description}"
+        rel_content = f"{relationship_type}\t{keywords}\t{src_id}\n{tgt_id}\n{description}"
         vdb_data = {
             rel_vdb_id: {
                 "src_id": src_id,
@@ -2365,6 +2398,7 @@ async def _merge_edges_then_upsert(
                 "source_id": source_id,
                 "content": rel_content,
                 "keywords": keywords,
+                "relationship_type": relationship_type,
                 "description": description,
                 "weight": weight,
                 "file_path": file_path,

@@ -1150,23 +1150,25 @@ class MongoGraphStorage(BaseGraphStorage):
         )
 
     def _construct_graph_edge(self, edge_id: str, edge: dict[str, str]):
+        properties = {
+            k: v
+            for k, v in edge.items()
+            if k
+            not in [
+                "_id",
+                "source_node_id",
+                "target_node_id",
+                "relationship",
+                "source_ids",
+            ]
+        }
+        edge_type = properties.get("relationship_type") or edge.get("relationship", "")
         return KnowledgeGraphEdge(
             id=edge_id,
-            type=edge.get("relationship", ""),
+            type=edge_type or "DIRECTED",
             source=edge["source_node_id"],
             target=edge["target_node_id"],
-            properties={
-                k: v
-                for k, v in edge.items()
-                if k
-                not in [
-                    "_id",
-                    "source_node_id",
-                    "target_node_id",
-                    "relationship",
-                    "source_ids",
-                ]
-            },
+            properties=properties,
         )
 
     async def get_knowledge_graph_all_by_degree(

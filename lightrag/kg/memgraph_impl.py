@@ -1,6 +1,7 @@
 import os
 import asyncio
 import random
+import re
 from dataclasses import dataclass
 from typing import final
 import configparser
@@ -601,11 +602,18 @@ class MemgraphStorage(BaseGraphStorage):
 
                     async def execute_upsert(tx: AsyncManagedTransaction):
                         workspace_label = self._get_workspace_label()
+                        relation_label = edge_properties.get("relationship_type", "DIRECTED")
+                        relation_label = re.sub(r"[^0-9A-Za-z_]", "_", relation_label).upper().strip("_")
+                        if not relation_label:
+                            relation_label = "DIRECTED"
+                        if relation_label[0].isdigit():
+                            relation_label = f"REL_{relation_label}"
+
                         query = f"""
                         MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
                         WITH source
                         MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
-                        MERGE (source)-[r:DIRECTED]-(target)
+                        MERGE (source)-[r:{relation_label}]-(target)
                         SET r += $properties
                         RETURN r, source, target
                         """
@@ -957,13 +965,17 @@ class MemgraphStorage(BaseGraphStorage):
                         if edge_id not in seen_edges:
                             start = rel.start_node
                             end = rel.end_node
+                            edge_properties = dict(rel)
+                            edge_type = (
+                                edge_properties.get("relationship_type") or rel.type
+                            )
                             result.edges.append(
                                 KnowledgeGraphEdge(
                                     id=f"{edge_id}",
-                                    type=rel.type,
+                                    type=edge_type,
                                     source=f"{start.id}",
                                     target=f"{end.id}",
-                                    properties=dict(rel),
+                                    properties=edge_properties,
                                 )
                             )
                             seen_edges.add(edge_id)
