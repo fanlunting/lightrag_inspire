@@ -442,11 +442,11 @@ async def _handle_single_relationship_extraction(
     file_path: str = "unknown_source",
 ):
     if (
-        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+        len(record_attributes) != 6 or "relation" not in record_attributes[0]
     ):  # treat "relationship" and "relation" interchangeable
         if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on REALTION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/6 fields on RELATION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
         return None
@@ -478,35 +478,29 @@ async def _handle_single_relationship_extraction(
             )
             return None
 
-        # Process keywords with same cleaning pipeline
-        edge_keywords = sanitize_and_normalize_extracted_text(
-            record_attributes[3], remove_inner_quotes=True
-        )
-        edge_keywords = edge_keywords.replace("，", ",")
-
-        # Process relationship description with same cleaning pipeline
-        edge_description = sanitize_and_normalize_extracted_text(record_attributes[4])
-
-        # Derive relationship type from first keyword (LLM generated) fallback to description
+        # Relationship type from LLM
         def _sanitize_relation_type(value: str) -> str:
             sanitized = re.sub(r"[^0-9A-Za-z_]", "_", value.upper()).strip("_")
             if sanitized and sanitized[0].isdigit():
                 sanitized = f"REL_{sanitized}"
             return sanitized or "RELATED_TO"
 
-        raw_relation_type = ""
-        if edge_keywords:
-            raw_relation_type = edge_keywords.split(",")[0].strip()
-        if not raw_relation_type and edge_description:
-            raw_relation_type = edge_description.split(" ")[0].strip("：:,，")
-        relationship_type = _sanitize_relation_type(raw_relation_type) if raw_relation_type else "RELATED_TO"
+        raw_relation_type = sanitize_and_normalize_extracted_text(
+            record_attributes[3], remove_inner_quotes=True
+        )
+        relationship_type = _sanitize_relation_type(raw_relation_type)
+
+        # Process keywords with same cleaning pipeline
+        edge_keywords = sanitize_and_normalize_extracted_text(
+            record_attributes[4], remove_inner_quotes=True
+        )
+        edge_keywords = edge_keywords.replace("，", ",")
+
+        # Process relationship description with same cleaning pipeline
+        edge_description = sanitize_and_normalize_extracted_text(record_attributes[5])
 
         edge_source_id = chunk_key
-        weight = (
-            float(record_attributes[-1].strip('"').strip("'"))
-            if is_float_regex(record_attributes[-1].strip('"').strip("'"))
-            else 1.0
-        )
+        weight = 1.0
 
         return dict(
             src_id=source,
