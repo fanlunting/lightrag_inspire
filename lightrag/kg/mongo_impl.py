@@ -843,7 +843,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         """
         Check if node_id is present in the collection by looking up its doc.
         No real need for $graphLookup here, but let's keep it direct.
@@ -907,7 +907,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         """
         Return the full node document, or None if missing.
         """

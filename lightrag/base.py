@@ -370,11 +370,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
 
     @abstractmethod
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         """Check if a node exists in the graph.
 
         Args:
             node_id: The ID of the node to check
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
 
         Returns:
             True if the node exists, False otherwise
@@ -416,11 +417,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         """Get node by its ID, returning only node properties.
 
         Args:
             node_id: The ID of the node to retrieve
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
 
         Returns:
             A dictionary of node properties if found, None otherwise
@@ -702,6 +704,8 @@ class DocProcessingStatus:
     """Additional metadata"""
     multimodal_processed: bool | None = field(default=None, repr=False)
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
+    graph_tag: str = "default"
+    """Graph tag for isolating different knowledge graphs (default: "default")"""
 
     def __post_init__(self):
         """

@@ -5,6 +5,7 @@ import asyncio
 import configparser
 import inspect
 import os
+import sys
 import time
 import warnings
 from dataclasses import asdict, dataclass, field
@@ -86,6 +87,7 @@ from lightrag.base import (
 from lightrag.namespace import NameSpace
 from lightrag.operate import (
     chunking_by_token_size,
+    chunking_by_file_format,
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
@@ -144,7 +146,7 @@ class LightRAG:
     vector_storage: str = field(default="NanoVectorDBStorage")
     """Storage backend for vector embeddings."""
 
-    graph_storage: str = field(default="NetworkXStorage")
+    graph_storage: str = field(default="Neo4JStorage")
     """Storage backend for knowledge graphs."""
 
     doc_status_storage: str = field(default="JsonDocStatusStorage")
@@ -245,9 +247,10 @@ class LightRAG:
             bool,
             int,
             int,
+            Optional[str],
         ],
         Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
-    ] = field(default_factory=lambda: chunking_by_token_size)
+    ] = field(default_factory=lambda: chunking_by_file_format)
     """
     Custom chunking function for splitting text into chunks before processing.
 
@@ -261,11 +264,13 @@ class LightRAG:
         - `split_by_character_only`: If True, the text is split only on the specified character.
         - `chunk_token_size`: The maximum number of tokens per chunk.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
+        - `file_path`: Optional file path to determine format-based chunking (e.g., JSON, CSV).
 
     The function should return a list of dictionaries (or an awaitable that resolves to a list),
     where each dictionary contains the following keys:
         - `tokens`: The number of tokens in the chunk.
         - `content`: The text content of the chunk.
+        - `chunk_order_index`: The order index of the chunk.
 
     Defaults to `chunking_by_token_size` if not specified.
     """
@@ -419,6 +424,7 @@ class LightRAG:
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
+            #"relation_types": get_env_value("RELATION_TYPES", DEFAULT_RELATION_TYPES, list),
         }
     )
 
@@ -614,7 +620,7 @@ class LightRAG:
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content", "file_path"},
+            meta_fields={"entity_name", "source_id", "content", "file_path", "embedding"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
@@ -1073,6 +1079,10 @@ class LightRAG:
             from lightrag.kg.networkx_impl import NetworkXStorage
 
             return NetworkXStorage
+        elif storage_name == "Neo4JStorage":
+            from lightrag.kg.neo4j_impl import Neo4JStorage
+
+            return Neo4JStorage
         elif storage_name == "JsonDocStatusStorage":
             from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 
@@ -1091,6 +1101,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        graph_tag: str = "default",
     ) -> str:
         """Sync Insert documents with checkpoint support
 
@@ -1103,6 +1114,7 @@ class LightRAG:
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            graph_tag: graph tag for isolating different knowledge graphs, used to add attribute to graph nodes (default: "default")
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1116,6 +1128,7 @@ class LightRAG:
                 ids,
                 file_paths,
                 track_id,
+                graph_tag,
             )
         )
 
@@ -1127,6 +1140,7 @@ class LightRAG:
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        graph_tag: str = "default",
     ) -> str:
         """Async Insert documents with checkpoint support
 
@@ -1139,18 +1153,24 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            graph_tag: graph tag for isolating different knowledge graphs, used to add attribute to graph nodes (default: "default")
 
         Returns:
             str: tracking ID for monitoring processing status
         """
+        # Debug: Check logger configuration
+        print(f"[DEBUG] ainsert() called, logger handlers: {len(logger.handlers)}, level: {logger.getEffectiveLevel()}", file=sys.stderr, flush=True)
+        logger.info(f"ainsert() called with input type: {type(input)}")
         # Generate track_id if not provided
         if track_id is None:
             track_id = generate_track_id("insert")
-
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
+        logger.info(f"Starting document enqueue process (track_id: {track_id})")
+        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id, graph_tag)
+        logger.info("Document enqueue completed, starting document processing")
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
+        logger.info("Document processing completed")
 
         return track_id
 
@@ -1232,6 +1252,7 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        graph_tag: str = "default",
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -1246,6 +1267,7 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            graph_tag: graph tag for isolating different knowledge graphs, used to add attribute to graph nodes
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1323,6 +1345,7 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "graph_tag": graph_tag,  # Store graph_tag in document status
             }
             for id_, content_data in contents.items()
         }
@@ -1594,6 +1617,8 @@ class LightRAG:
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data("pipeline_status")
         pipeline_status_lock = get_pipeline_status_lock()
+        logger.info("api pipeline_process_enqueue_documents start")
+        print("api pipeline_process_enqueue_documents")
 
         # Check if another process is already processing the queue
         async with pipeline_status_lock:
@@ -1667,6 +1692,7 @@ class LightRAG:
                 to_process_docs = await self._validate_and_fix_document_consistency(
                     to_process_docs, pipeline_status, pipeline_status_lock
                 )
+                logger.info(f"to_process_docs!!: {to_process_docs}")
 
                 if not to_process_docs:
                     log_message = (
@@ -1725,8 +1751,10 @@ class LightRAG:
                     processing_start_time = int(time.time())
                     first_stage_tasks = []
                     entity_relation_task = None
+                    print("before semaphore")
 
                     async with semaphore:
+                        print("in semaphore")
                         nonlocal processed_count
                         # Initialize to prevent UnboundLocalError in error handling
                         first_stage_tasks = []
@@ -1740,6 +1768,9 @@ class LightRAG:
                             # Get file path from status document
                             file_path = getattr(
                                 status_doc, "file_path", "unknown_source"
+                            )
+                            graph_tag = getattr(
+                                status_doc, "graph_tag", "default"
                             )
 
                             async with pipeline_status_lock:
@@ -1768,7 +1799,12 @@ class LightRAG:
                                     )
 
                             # Get document content from full_docs
+                            print("get_by_id")
                             content_data = await self.full_docs.get_by_id(doc_id)
+                            if content_data:
+                                print("content_data ok")
+                                logger.info(f"content_data!!: {content_data}")
+
                             if not content_data:
                                 raise Exception(
                                     f"Document content not found in full_docs for doc_id: {doc_id}"
@@ -1783,6 +1819,7 @@ class LightRAG:
                                 split_by_character_only,
                                 self.chunk_overlap_token_size,
                                 self.chunk_token_size,
+                                file_path,
                             )
 
                             # If result is awaitable, await to get actual result
@@ -1802,7 +1839,8 @@ class LightRAG:
                                     **dp,
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
-                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
+                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk，
+                                    "graph_tag": graph_tag,
                                 }
                                 for dp in chunking_result
                             }
@@ -1837,6 +1875,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "graph_tag": status_doc.graph_tag,  # Preserve existing graph_tag
                                             "metadata": {
                                                 "processing_start_time": processing_start_time
                                             },
@@ -1930,6 +1969,7 @@ class LightRAG:
                                         ).isoformat(),
                                         "file_path": file_path,
                                         "track_id": status_doc.track_id,  # Preserve existing track_id
+                                        "graph_tag": status_doc.graph_tag,  # Preserve existing graph_tag
                                         "metadata": {
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
@@ -1951,6 +1991,8 @@ class LightRAG:
                                         )
 
                                 # Use chunk_results from entity_relation_task
+                                # Get graph_tag from document status, default to "default"
+                                graph_tag = getattr(status_doc, "graph_tag", "default")
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
@@ -1968,6 +2010,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
+                                    graph_tag=graph_tag,
                                 )
 
                                 # Record processing end time
@@ -1987,6 +2030,7 @@ class LightRAG:
                                             ).isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "graph_tag": status_doc.graph_tag,  # Preserve existing graph_tag
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
@@ -2055,6 +2099,7 @@ class LightRAG:
                                             "updated_at": datetime.now().isoformat(),
                                             "file_path": file_path,
                                             "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "graph_tag": status_doc.graph_tag,  # Preserve existing graph_tag
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
@@ -2064,8 +2109,10 @@ class LightRAG:
                                 )
 
                 # Create processing tasks for all documents
+                print("create doc_tasks document tasks")
                 doc_tasks = []
                 for doc_id, status_doc in to_process_docs.items():
+                    print("create doc_tasks doc_id: ", doc_id)
                     doc_tasks.append(
                         process_document(
                             doc_id,
@@ -3929,3 +3976,299 @@ class LightRAG:
         loop.run_until_complete(
             self.aexport_data(output_path, file_format, include_vector_data)
         )
+    async def merge_graph(
+        self,
+        graph_tags: list[str],
+        similarity_threshold: float = 0.85,
+        top_k: int = 8,
+        llm_confirm: bool = True,
+    ) -> dict[str, Any]:
+        """Fuse graphs (by graph_tag) and add SAME/SIMILAR links for overlapping entities."""
+        if not graph_tags:
+            raise ValueError("graph_tags cannot be empty")
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags:
+            raise ValueError("graph_tags must contain non-empty values")
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fused_graph_tag = (
+            "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+            + f"_{timestamp_suffix}"
+        )
+        logger.info(f"merge_graph: fused_graph_tag: {fused_graph_tag}")
+
+        def _split(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+
+        def _join(values: list[str]) -> str:
+            seen, ordered = set(), []
+            for item in values:
+                if item and item not in seen:
+                    seen.add(item)
+                    ordered.append(item)
+            return GRAPH_FIELD_SEP.join(ordered)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+
+        target_nodes = [n for n in nodes if _has_tag(n)]
+        if not target_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+
+        canonical_map: dict[str, list[dict[str, Any]]] = {}
+        clusters: dict[str, dict[str, Any]] = {}
+    
+        logger.info(f"merge_graph: target_nodes: {target_nodes[:10]}")
+
+        for node in target_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+
+            # 复制原始节点，避免后续修改污染
+            canonical_map.setdefault(entity_id, []).append(dict(node))
+
+            cluster = clusters.setdefault(
+                entity_id,
+                {
+                    "source_nodes": [],
+                    "attributes": {
+                        "entity_type": [],
+                        "description": [],
+                        "file_path": [],
+                        "source_id": [],
+                    },
+                    "graph_tags": set(),
+                    "base": dict(node),
+                },
+            )
+            cluster["source_nodes"].append(entity_id)
+            cluster["graph_tags"].update(_split(node.get("graph_tag")))
+            for attr in cluster["attributes"]:
+                cluster["attributes"][attr].extend(_split(node.get(attr)))
+
+        async with graph_db_lock:
+            for entity_id, data in clusters.items():
+                payload = dict(data["base"])
+                payload["entity_id"] = entity_id
+                payload["graph_tag"] = fused_graph_tag
+                payload["merged_from_graph_tags"] = _join(list(data["graph_tags"]))
+                payload["merged_from_entities"] = _join(data["source_nodes"])
+                payload["updated_at"] = int(time.time())
+                for attr, values in data["attributes"].items():
+                    if values:
+                        payload[attr] = _join(values)
+                await self.chunk_entity_relation_graph.upsert_node(entity_id, payload)
+
+        # 只在同一 entity_id 的原始副本之间加 SAME_AS
+        same_edges: list[tuple[str, str]] = []
+        for members in canonical_map.values():
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    src = members[i]["entity_id"]
+                    tgt = members[j]["entity_id"]
+                    if src != tgt:
+                        same_edges.append((src, tgt))
+        logger.info(f"merge_graph: same_edges: {same_edges}")
+
+        async def _get_embedding(name: str):
+            entity_vdb_id = compute_mdhash_id(name, prefix="ent-")
+            record = await self.entities_vdb.get_by_id(entity_vdb_id)
+            return record.get("embedding") if record else None
+
+        similar_edges: list[tuple[str, str]] = []
+        for entity_id in canonical_map.keys():
+            embedding = await _get_embedding(entity_id)
+            if embedding is None:
+                continue
+            neighbors = await self.entities_vdb.query(
+                query=entity_id, top_k=top_k, query_embedding=embedding
+            )
+            for neighbor in neighbors:
+                other_id = neighbor["entity_name"]
+                if other_id == entity_id or neighbor["score"] < similarity_threshold:
+                    continue
+
+                is_similar = True
+                if llm_confirm:
+                    desc_a = clusters[entity_id]["base"].get("description", "")
+                    desc_b = clusters.get(other_id, {}).get("base", {}).get(
+                        "description", ""
+                    )
+                    prompt = (
+                        "请判断以下两个实体是否描述的是同一事物或高度相关：\n"
+                        f"实体A：{entity_id}\n描述：{desc_a}\n\n"
+                        f"实体B：{other_id}\n描述：{desc_b}\n\n"
+                        "若相同/高度相关，回复 YES，否则回复 NO。"
+                    )
+                    answer = await self.llm_model_func(prompt)
+                    is_similar = "YES" in answer.upper()
+
+                if is_similar:
+                    similar_edges.append((entity_id, other_id))
+
+        async with graph_db_lock:
+            for src, tgt in same_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {"relationship_type": "SAME_AS", "graph_tag": fused_graph_tag},
+                )
+            for src, tgt in similar_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {"relationship_type": "SIMILAR", "graph_tag": fused_graph_tag},
+                )
+            await self.chunk_entity_relation_graph.index_done_callback()
+        return {
+            "graph_tag": fused_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "nodes_written": len(clusters),
+            "same_edges": len(same_edges),
+            "similar_edges": len(similar_edges),
+        }
+    
+    from datetime import datetime, timezone
+
+    async def amerge_graph(
+        self,
+        graph_tags: list[str],
+        similarity_threshold: float = 0.85,
+        top_k: int = 8,
+        llm_confirm: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Merge graphs identified by `graph_tags` in place:
+        - Original nodes stay untouched (no new graph_tag).
+        - We only add new relationships with fusion_tag metadata.
+        """
+        if not graph_tags:
+            raise ValueError("graph_tags cannot be empty")
+
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags:
+            raise ValueError("graph_tags must contain non-empty values")
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fusion_tag = "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+        fusion_tag = f"{fusion_tag}_{timestamp_suffix}"
+
+        def _split(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+
+        target_nodes = [n for n in nodes if _has_tag(n)]
+        if not target_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+
+        canonical_map: dict[str, list[dict[str, Any]]] = {}
+        node_lookup: dict[str, dict[str, Any]] = {}
+        for node in target_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+            canonical_map.setdefault(entity_id, []).append(dict(node))
+            node_lookup[entity_id] = dict(node)
+
+        # SAME_AS：同 entity_id 的原节点之间
+        same_edges: list[tuple[str, str]] = []
+        for members in canonical_map.values():
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    src = members[i]["entity_id"]
+                    tgt = members[j]["entity_id"]
+                    if src and tgt and src != tgt:
+                        same_edges.append((src, tgt))
+
+        async def _get_embedding(entity_name: str):
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            record = await self.entities_vdb.get_by_id(entity_vdb_id)
+            return record.get("embedding") if record else None
+
+        # SIMILAR：向量+LLM
+        similar_edges: list[tuple[str, str]] = []
+        for entity_id in canonical_map.keys():
+            embedding = await _get_embedding(entity_id)
+            if embedding is None:
+                continue
+            neighbors = await self.entities_vdb.query(
+                query=entity_id, top_k=top_k, query_embedding=embedding
+            )
+            for neighbor in neighbors:
+                other_id = neighbor["entity_name"]
+                if other_id == entity_id or neighbor["score"] < similarity_threshold:
+                    continue
+                if other_id not in node_lookup:
+                    continue
+
+                is_similar = True
+                if llm_confirm:
+                    desc_a = node_lookup[entity_id].get("description", "")
+                    desc_b = node_lookup[other_id].get("description", "")
+                    prompt = (
+                        "请判断以下两个实体是否描述的是同一事物或高度相关：\n"
+                        f"实体A：{entity_id}\n描述：{desc_a}\n\n"
+                        f"实体B：{other_id}\n描述：{desc_b}\n\n"
+                        "若相同/高度相关，回复 YES，否则回复 NO。"
+                    )
+                    answer = await self.llm_model_func(prompt)
+                    is_similar = "YES" in answer.upper()
+
+                if is_similar:
+                    similar_edges.append((entity_id, other_id))
+        
+        async with graph_db_lock:
+            for src, tgt in same_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SAME_AS",
+                        "fusion_tag": fusion_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+            for src, tgt in similar_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SIMILAR",
+                        "fusion_tag": fusion_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+            await self.chunk_entity_relation_graph.index_done_callback()
+        logger.info(f"amerge_graph: same_edges: {same_edges}")
+        logger.info(f"amerge_graph: similar_edges: {similar_edges}")
+        return {
+            "fusion_tag": fusion_tag,
+            "source_graph_tags": normalized_tags,
+            "same_edges": len(same_edges),
+            "similar_edges": len(similar_edges),
+        }

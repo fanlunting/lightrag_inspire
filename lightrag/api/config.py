@@ -5,6 +5,7 @@ Configs for the LightRAG API.
 import os
 import argparse
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
@@ -43,10 +44,11 @@ from lightrag.constants import (
     DEFAULT_ENTITY_TYPES,
 )
 
-# use the .env that is inside the current folder
+# use the .env that is inside the current folder (project root)
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+# Find project root by looking for .env file in current directory or parent directories
+load_dotenv(dotenv_path=".env", override=True)
 
 
 ollama_server_infos = OllamaServerInfos()
@@ -55,7 +57,7 @@ ollama_server_infos = OllamaServerInfos()
 class DefaultRAGStorageConfig:
     KV_STORAGE = "JsonKVStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
-    GRAPH_STORAGE = "NetworkXStorage"
+    GRAPH_STORAGE = "Neo4JStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
 

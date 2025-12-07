@@ -3511,7 +3511,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         return result
 
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         query = f"""
             SELECT EXISTS (
               SELECT 1
@@ -3565,7 +3565,7 @@ class PGGraphStorage(BaseGraphStorage):
         row = (await self._query(query, params=params))[0]
         return bool(row["edge_exists"])
 
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties"""
 
         result = await self.get_nodes_batch(node_ids=[node_id])

@@ -113,7 +113,7 @@ class MemgraphStorage(BaseGraphStorage):
         # Memgraph handles persistence automatically
         pass
 
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         """
         Check if a node exists in the graph.
 
@@ -201,7 +201,7 @@ class MemgraphStorage(BaseGraphStorage):
                     )  # Ensure the result is consumed even on error
                 raise
 
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties
 
         Args:

@@ -93,7 +93,7 @@ class NetworkXStorage(BaseGraphStorage):
 
             return self._graph
 
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         graph = await self._get_graph()
         return graph.has_node(node_id)
 
@@ -101,7 +101,7 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         return graph.has_edge(source_node_id, target_node_id)
 
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         graph = await self._get_graph()
         return graph.nodes.get(node_id)
 

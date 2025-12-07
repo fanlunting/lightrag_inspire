@@ -69,6 +69,30 @@ class Neo4JStorage(BaseGraphStorage):
         """Return workspace label (guaranteed non-empty during initialization)"""
         return self.workspace
 
+    def _normalize_relationship_type(self, relationship_type: str) -> str:
+        """
+        Normalize relationship type name for Neo4j compatibility.
+        Neo4j relationship types cannot contain hyphens (-) or spaces.
+        Replaces invalid characters with underscores.
+        
+        Args:
+            relationship_type: Original relationship type string
+            
+        Returns:
+            Normalized relationship type safe for Neo4j Cypher queries
+        """
+        if not relationship_type:
+            return "DIRECTED"
+        # Replace hyphens, spaces, and other special characters with underscores
+        # Keep alphanumeric characters, underscores, and Chinese characters
+        normalized = re.sub(r'[^\w\u4e00-\u9fff]', '_', relationship_type)
+        # Remove consecutive underscores
+        normalized = re.sub(r'_+', '_', normalized)
+        # Remove leading/trailing underscores
+        normalized = normalized.strip('_')
+        # If empty after normalization, use default
+        return normalized if normalized else "DIRECTED"
+
     def _is_chinese_text(self, text: str) -> bool:
         """Check if text contains Chinese characters."""
         chinese_pattern = re.compile(r"[\u4e00-\u9fff]+")
@@ -153,7 +177,7 @@ class Neo4JStorage(BaseGraphStorage):
                             result = await session.run("MATCH (n) RETURN n LIMIT 0")
                             await result.consume()  # Ensure result is consumed
                             logger.info(
-                                f"[{self.workspace}] Connected to {database} at {URI}"
+                                f"neo4j_database:[{self.workspace}] Connected to {database} at {URI}"
                             )
                             connected = True
                         except neo4jExceptions.ServiceUnavailable as e:
@@ -353,12 +377,13 @@ class Neo4JStorage(BaseGraphStorage):
         # Neo4J handles persistence automatically
         pass
 
-    async def has_node(self, node_id: str) -> bool:
+    async def has_node(self, node_id: str, graph_tag: str = "default") -> bool:
         """
         Check if a node with the given label exists in the database
 
         Args:
             node_id: Label of the node to check
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
 
         Returns:
             bool: True if node exists, False otherwise
@@ -373,8 +398,9 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             result = None
             try:
-                query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS node_exists"
-                result = await session.run(query, entity_id=node_id)
+                # Always filter by graph_tag for graph isolation
+                query = f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN count(n) > 0 AS node_exists"
+                result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
                 single_result = await result.single()
                 await result.consume()  # Ensure result is fully consumed
                 return single_result["node_exists"]
@@ -427,11 +453,12 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()  # Ensure results are consumed even on error
                 raise
 
-    async def get_node(self, node_id: str) -> dict[str, str] | None:
+    async def get_node(self, node_id: str, graph_tag: str = "default") -> dict[str, str] | None:
         """Get node by its label identifier, return only node properties
 
         Args:
             node_id: The node label to look up
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
 
         Returns:
             dict: Node properties if found
@@ -446,10 +473,11 @@ class Neo4JStorage(BaseGraphStorage):
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             try:
+                # Always filter by graph_tag for graph isolation
                 query = (
-                    f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN n"
+                    f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN n"
                 )
-                result = await session.run(query, entity_id=node_id)
+                result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
                 try:
                     records = await result.fetch(
                         2
@@ -937,12 +965,12 @@ class Neo4JStorage(BaseGraphStorage):
         workspace_label = self._get_workspace_label()
         properties = node_data
         entity_type = properties["entity_type"]
+        logger.info(f"node_data: {node_data}, node_id: {node_id}")
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
-
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = f"""
                     MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
@@ -992,6 +1020,10 @@ class Neo4JStorage(BaseGraphStorage):
         """
         try:
             edge_properties = edge_data
+            raw_relation_type = edge_properties.get("relationship_type", "DIRECTED")
+            # Normalize relationship type to be Neo4j-compatible (replace hyphens, spaces, etc.)
+            relation_type = self._normalize_relationship_type(raw_relation_type)
+            logger.info(f"source_node_id: {source_node_id}, target_node_id: {target_node_id}, edge_properties: {edge_data}, normalized_relation_type: {relation_type}")
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
@@ -1000,7 +1032,7 @@ class Neo4JStorage(BaseGraphStorage):
                     MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
                     WITH source
                     MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
-                    MERGE (source)-[r:DIRECTED]-(target)
+                    MERGE (source)-[r:`{relation_type}`]-(target)
                     SET r += $properties
                     RETURN r, source, target
                     """
@@ -1008,7 +1040,7 @@ class Neo4JStorage(BaseGraphStorage):
                         query,
                         source_entity_id=source_node_id,
                         target_entity_id=target_node_id,
-                        properties=edge_properties,
+                        properties=edge_properties
                     )
                     try:
                         await result.fetch(2)

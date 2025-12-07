@@ -23,6 +23,11 @@ from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+
+# Load .env file FIRST before importing config module
+# This ensures .env variables are available when config.py is imported
+load_dotenv(dotenv_path=".env", override=True)
+
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
     display_splash_screen,
@@ -62,11 +67,6 @@ from lightrag.kg.shared_storage import (
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
-
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
 
 
 webui_title = os.getenv("WEBUI_TITLE")
@@ -853,14 +853,30 @@ def create_app(args):
     import inspect
 
     # Create the EmbeddingFunc instance (now returns complete EmbeddingFunc with max_token_size)
-    embedding_func = create_optimized_embedding_function(
-        config_cache=config_cache,
-        binding=args.embedding_binding,
-        model=args.embedding_model,
-        host=args.embedding_binding_host,
-        api_key=args.embedding_binding_api_key,
-        args=args,
-    )
+    # Use simplified approach similar to lightrag_openai_compatible_demo.py
+    if args.embedding_binding == "openai":
+        from lightrag.llm.openai import openai_embed
+        
+        embedding_func = EmbeddingFunc(
+            embedding_dim=int(os.getenv("EMBEDDING_DIM", str(args.embedding_dim))),
+            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", str(args.embedding_token_limit or 8192))),
+            func=lambda texts: openai_embed(
+                texts,
+                model=args.embedding_model,
+                base_url=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            ),
+        )
+    else:
+        # Use optimized function for other bindings
+        embedding_func = create_optimized_embedding_function(
+            config_cache=config_cache,
+            binding=args.embedding_binding,
+            model=args.embedding_model,
+            host=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+            args=args,
+        )
 
     # Get embedding_send_dim from centralized configuration
     embedding_send_dim = args.embedding_send_dim
@@ -970,6 +986,21 @@ def create_app(args):
 
     # Initialize RAG with unified configuration
     try:
+        logger.info("Initializing LightRAG with configuration:")
+        logger.info(f"working_dir: {args.working_dir}")
+        logger.info(f"workspace: {args.workspace}")
+        logger.info(f"llm_binding: {args.llm_binding}")
+        logger.info(f"llm_model: {args.llm_model}")
+        logger.info(f"embedding_binding: {args.embedding_binding}")
+        logger.info(f"embedding_model: {args.embedding_model}")
+        logger.info(f"embedding_binding_host: {args.embedding_binding_host}")
+        logger.info(f"embedding_binding_api_key: {args.embedding_binding_api_key}")
+        logger.info(f"embedding_send_dim: {args.embedding_send_dim}")
+        logger.info(f"embedding_token_limit: {args.embedding_token_limit}")
+        logger.info(f"embedding_batch_num: {args.embedding_batch_num}")
+        logger.info(f"embedding_func_max_async: {args.embedding_func_max_async}")
+        logger.info(f"kv_storage: {args.kv_storage}")
+        logger.info(f"graph_storage: {args.graph_storage}")
         rag = LightRAG(
             working_dir=args.working_dir,
             workspace=args.workspace,
@@ -987,7 +1018,7 @@ def create_app(args):
             default_llm_timeout=llm_timeout,
             default_embedding_timeout=embedding_timeout,
             kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
+            graph_storage="Neo4JStorage",
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
             vector_db_storage_cls_kwargs={
@@ -1243,16 +1274,17 @@ def configure_logging():
 
     # Reset any existing handlers to ensure clean configuration
     for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
-        logger = logging.getLogger(logger_name)
-        logger.handlers = []
-        logger.filters = []
+        logger_instance = logging.getLogger(logger_name)
+        logger_instance.handlers = []
+        logger_instance.filters = []
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    # Create log directory if it doesn't exist (create the directory itself, not its parent)
+    os.makedirs(log_dir, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
@@ -1317,6 +1349,33 @@ def configure_logging():
             },
         }
     )
+
+    # Set the logger level to INFO (consistent with demo approach)
+    logger.setLevel(logging.INFO)
+    # Enable verbose debug if needed
+    set_verbose_debug(os.getenv("VERBOSE_DEBUG", "false").lower() == "true")
+    
+    # Force create log file by writing a test log entry
+    # RotatingFileHandler only creates the file when first log is written
+    try:
+        test_logger = logging.getLogger("lightrag")
+        test_logger.info("=" * 80)
+        test_logger.info("LightRAG Server logging initialized")
+        test_logger.info(f"Log file: {log_file_path}")
+        test_logger.info("=" * 80)
+        # Verify log file was created
+        if os.path.exists(log_file_path):
+            print(f"✓ Log file created successfully: {log_file_path}")
+        else:
+            print(f"⚠ Warning: Log file not created at {log_file_path}")
+            print("  This may be due to permissions or path issues.")
+    except PermissionError as e:
+        print(f"✗ Permission denied: Cannot create log file at {log_file_path}")
+        print(f"  Error: {e}")
+        print("  Continuing with console logging only.")
+    except Exception as e:
+        print(f"⚠ Warning: Failed to write initial log entry: {e}")
+        print(f"  Log file path: {log_file_path}")
 
 
 def check_and_install_dependencies():

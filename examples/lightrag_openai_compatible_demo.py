@@ -10,9 +10,12 @@ from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"), override=True)
 WORKING_DIR = "./dickens"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LOG_DIR = PROJECT_ROOT / "log"
 
 
 def configure_logging():
@@ -25,13 +28,11 @@ def configure_logging():
         logger_instance.filters = []
 
     # Get log directory path from environment variable or use current directory
-    log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(
-        os.path.join(log_dir, "lightrag_compatible_demo.log")
-    )
+    log_dir = Path(os.getenv("LOG_DIR", DEFAULT_LOG_DIR)).resolve()
+    log_file_path = log_dir / "lightrag_compatible_demo.log"
 
     print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
@@ -58,7 +59,7 @@ def configure_logging():
                 "file": {
                     "formatter": "detailed",
                     "class": "logging.handlers.RotatingFileHandler",
-                    "filename": log_file_path,
+                    "filename": str(log_file_path),
                     "maxBytes": log_max_bytes,
                     "backupCount": log_backup_count,
                     "encoding": "utf-8",
@@ -164,7 +165,7 @@ async def initialize_rag():
             ),
         ),
         addon_params={
-            "language": os.getenv("SUMMARY_LANGUAGE", "Chinese"),  # 设置语言为中文
+            "language": "Chinese",  # 设置语言为中文
             "entity_types": custom_entity_types,  # 传入自定义的 entity_types
         },
         graph_storage="Neo4JStorage",
@@ -211,22 +212,80 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        import json
-        with open("/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json", "r", encoding="utf-8") as f:
-            json_data = json.load(f)
-        content = json.dumps(json_data, ensure_ascii=False)  
-        print("before insert", type(content))
+        # import json
+        # with open("/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json", "r", encoding="utf-8") as f:
+        #     json_data = json.load(f)
+        # content = json.dumps(json_data, ensure_ascii=False)  
+        # print("before insert", type(content))
 
-        await rag.ainsert(content, file_paths="/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json")
-        print("after insert")
+        # await rag.ainsert(content, file_paths="/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json")
+        # graph_tag = "standard_cure", file = data/cure_output.xlsx
+        import pandas as pd
+        def excel_to_strings(file_path, sheet_name=0):
+            """
+            读取Excel文件，将每一行转换为「表头名：内容」格式的字符串
+            
+            Args:
+                file_path: Excel文件路径
+                sheet_name: 工作表名称或索引，默认为0（第一个工作表）
+            
+            Returns:
+                list: 每行转换后的字符串列表
+            """
+            # 读取Excel文件
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            
+            result_strings = ""
+            
+            # 遍历每一行
+            for idx, row in df.iterrows():
+                row_strings = ""
+                
+                # 遍历每一列（表头名）
+                for col_name in df.columns:
+                    value = row[col_name]
+                    
+                    # 处理空值
+                    if pd.isna(value):
+                        value_str = ""
+                    else:
+                        value_str = str(value).strip()
+                    
+                    # 拼接「表头名：内容」
+                    row_strings = row_strings + f"{col_name}：{value_str}, "
+                
+                # 用\t连接当前行的所有字段
+                result_strings = result_strings + row_strings + "\t"
+            
+            return result_strings
+        cure_entity_types = ["治法", "治疗阶段", "治疗目标", "治疗手段", "核心概念", "别名"]
+        cure_file = "/Users/mac/Downloads/lightrag_inspire/data/cure_output.xlsx"
+        rag.addon_params["entity_types"] = cure_entity_types
+        # 打开一个excel文件，读取所有sheet，每个sheet作为一个document插入
+        content = excel_to_strings(cure_file)
+        print("before insert",  content[:100])
+        print("before insert", type(content))
+        await rag.ainsert(content, file_paths=cure_file, graph_tag="standard_cure")
+
+        decease_entity_types = ["疾病", "症状", "病因", "病机", "病位", "证型", "证候", "别名"]
+        decease_file = "/Users/mac/Downloads/lightrag_inspire/data/decease_output.xlsx"
+        rag.addon_params["entity_types"] = decease_entity_types
+        content = excel_to_strings(decease_file)
+        await rag.ainsert(content, file_paths=decease_file, graph_tag="standard_decease")
+
+        # merge
+        await rag.amerge_graph(graph_tags=["standard_cure", "standard_decease"])
+        
+
         # Perform naive search
         print("\n=====================")
         print("Query mode: naive")
         print("=====================")
-        resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="naive", stream=True),
-        )
+        resp = 0
+        # resp = await rag.aquery(
+        #     "What are the top themes in this story?",
+        #     param=QueryParam(mode="naive", stream=True),
+        # )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
         else:
@@ -236,10 +295,10 @@ async def main():
         print("\n=====================")
         print("Query mode: local")
         print("=====================")
-        resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="local", stream=True),
-        )
+        # resp = await rag.aquery(
+        #     "What are the top themes in this story?",
+        #     param=QueryParam(mode="local", stream=True),
+        # )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
         else:
@@ -249,10 +308,10 @@ async def main():
         print("\n=====================")
         print("Query mode: global")
         print("=====================")
-        resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="global", stream=True),
-        )
+        # resp = await rag.aquery(
+        #     "What are the top themes in this story?",
+        #     param=QueryParam(mode="global", stream=True),
+        # )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
         else:
@@ -262,10 +321,10 @@ async def main():
         print("\n=====================")
         print("Query mode: hybrid")
         print("=====================")
-        resp = await rag.aquery(
-            "What are the top themes in this story?",
-            param=QueryParam(mode="hybrid", stream=True),
-        )
+        # resp = await rag.aquery(
+        #     "What are the top themes in this story?",
+        #     param=QueryParam(mode="hybrid", stream=True),
+        # )
         if inspect.isasyncgen(resp):
             await print_stream(resp)
         else:

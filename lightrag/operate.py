@@ -100,6 +100,7 @@ def chunking_by_token_size(
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
+    file_path: str | None = None,
 ) -> list[dict[str, Any]]:
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
@@ -146,6 +147,356 @@ def chunking_by_token_size(
                 }
             )
     return results
+
+
+def chunking_by_file_format(
+    tokenizer: Tokenizer,
+    content: str,
+    split_by_character: str | None = None,
+    split_by_character_only: bool = False,
+    overlap_token_size: int = 128,
+    max_token_size: int = 8096,
+    file_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Intelligent chunking function that splits content based on file format.
+    
+    Supported formats and splitting strategies:
+    
+    - JSON files (.json):
+      * JSON arrays: split by each object (one chunk per object)
+      * JSONL (JSON Lines): split by line (each line is a JSON object)
+      * Single JSON object: treat as one chunk (if exceeds max_token_size, split further)
+    
+    - CSV/TSV files (.csv, .tsv):
+      * Split by line (each line is a row)
+      * If a line exceeds max_token_size, it will be split further using token-based chunking
+    
+    - Markdown files (.md):
+      * Split by paragraphs (double newlines: \\n\\n)
+      * If a paragraph exceeds max_token_size, it will be split further using token-based chunking
+    
+    - Plain text files (.txt):
+      * Split by paragraphs (double newlines: \\n\\n)
+      * If a paragraph exceeds max_token_size, it will be split further using token-based chunking
+    
+    - Other formats:
+      * Fall back to token-based chunking (fixed-size chunks based on max_token_size)
+      * Content is split into chunks of approximately max_token_size tokens with overlap_token_size overlap
+    
+    Args:
+        tokenizer: Tokenizer instance
+        content: Content to be chunked
+        split_by_character: Character to split by (if provided, overrides format detection)
+        split_by_character_only: If True, only split by character
+        overlap_token_size: Overlap size in tokens
+        max_token_size: Maximum tokens per chunk
+        file_path: File path to determine format (optional)
+    
+    Returns:
+        List of chunk dictionaries with 'tokens', 'content', and 'chunk_order_index'
+    """
+    logger.info(f"chunking_by_file_format, {file_path}")
+    # If split_by_character is explicitly provided, use the original behavior
+    if split_by_character is not None:
+        return chunking_by_token_size(
+            tokenizer,
+            content,
+            split_by_character,
+            split_by_character_only,
+            overlap_token_size,
+            max_token_size,
+            file_path,
+        )
+    
+    # Detect file format from file_path
+    file_ext = None
+    if file_path:
+        file_path_obj = Path(file_path)
+        file_ext = file_path_obj.suffix.lower()
+    
+    results: list[dict[str, Any]] = []
+    logger.info(f"file_ext: {file_ext}")
+    
+    # Handle JSON files
+    if file_ext == ".json":
+        try:
+            # Try to parse as JSON array
+            try:
+                json_data = json.loads(content)
+                if isinstance(json_data, list):
+                    # JSON array: split by each object
+                    for index, item in enumerate(json_data):
+                        chunk_content = json.dumps(item, ensure_ascii=False)
+                        tokens = tokenizer.encode(chunk_content)
+                        token_count = len(tokens)
+                        
+                        # If chunk exceeds max_token_size, split it further
+                        if token_count > max_token_size:
+                            # Use token-based splitting for oversized chunks
+                            chunk_tokens = tokenizer.encode(chunk_content)
+                            for start in range(
+                                0, len(chunk_tokens), max_token_size - overlap_token_size
+                            ):
+                                sub_chunk_content = tokenizer.decode(
+                                    chunk_tokens[start : start + max_token_size]
+                                )
+                                sub_tokens = chunk_tokens[start : start + max_token_size]
+                                results.append(
+                                    {
+                                        "tokens": len(sub_tokens),
+                                        "content": sub_chunk_content.strip(),
+                                        "chunk_order_index": len(results),
+                                    }
+                                )
+                        else:
+                            results.append(
+                                {
+                                    "tokens": token_count,
+                                    "content": chunk_content.strip(),
+                                    "chunk_order_index": index,
+                                }
+                            )
+                    logger.info(f"chunking_by_file_format: json results: {results}")
+                    return results
+            except json.JSONDecodeError:
+                pass
+            
+            # Try JSONL format (JSON Lines - one JSON object per line)
+            lines = content.strip().split("\n")
+            if len(lines) > 1:
+                jsonl_valid = True
+                for line in lines[:5]:  # Check first 5 lines
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError:
+                        jsonl_valid = False
+                        break
+                
+                if jsonl_valid:
+                    # JSONL format: split by line
+                    for index, line in enumerate(lines):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            # Validate it's valid JSON
+                            json.loads(line)
+                            tokens = tokenizer.encode(line)
+                            token_count = len(tokens)
+                            
+                            # If chunk exceeds max_token_size, split it further
+                            if token_count > max_token_size:
+                                chunk_tokens = tokenizer.encode(line)
+                                for start in range(
+                                    0, len(chunk_tokens), max_token_size - overlap_token_size
+                                ):
+                                    sub_chunk_content = tokenizer.decode(
+                                        chunk_tokens[start : start + max_token_size]
+                                    )
+                                    sub_tokens = chunk_tokens[start : start + max_token_size]
+                                    results.append(
+                                        {
+                                            "tokens": len(sub_tokens),
+                                            "content": sub_chunk_content.strip(),
+                                            "chunk_order_index": len(results),
+                                        }
+                                    )
+                            else:
+                                results.append(
+                                    {
+                                        "tokens": token_count,
+                                        "content": line.strip(),
+                                        "chunk_order_index": index,
+                                    }
+                                )
+                        except json.JSONDecodeError:
+                            # Invalid JSON line, skip it
+                            continue
+                    
+                    if results:
+                        return results
+            
+            # Single JSON object: treat as one chunk (but still respect max_token_size)
+            try:
+                json.loads(content)
+                tokens = tokenizer.encode(content)
+                token_count = len(tokens)
+                
+                if token_count > max_token_size:
+                    # Split oversized single JSON object
+                    chunk_tokens = tokenizer.encode(content)
+                    for start in range(
+                        0, len(chunk_tokens), max_token_size - overlap_token_size
+                    ):
+                        sub_chunk_content = tokenizer.decode(
+                            chunk_tokens[start : start + max_token_size]
+                        )
+                        sub_tokens = chunk_tokens[start : start + max_token_size]
+                        results.append(
+                            {
+                                "tokens": len(sub_tokens),
+                                "content": sub_chunk_content.strip(),
+                                "chunk_order_index": len(results),
+                            }
+                        )
+                else:
+                    results.append(
+                        {
+                            "tokens": token_count,
+                            "content": content.strip(),
+                            "chunk_order_index": 0,
+                        }
+                    )
+                return results
+            except json.JSONDecodeError:
+                pass
+        except Exception as e:
+            logger.warning(f"Error parsing JSON file {file_path}: {e}. Falling back to token-based chunking.")
+    
+    # Handle CSV/TSV files
+    if file_ext in [".csv", ".tsv", ".xlsx"]:
+        delimiter = "," if file_ext == ".csv" else "\t"
+        lines = content.strip().split("\t")
+        
+        for index, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            tokens = tokenizer.encode(line)
+            token_count = len(tokens)
+            
+            # If chunk exceeds max_token_size, split it further
+            if token_count > max_token_size:
+                chunk_tokens = tokenizer.encode(line)
+                for start in range(
+                    0, len(chunk_tokens), max_token_size - overlap_token_size
+                ):
+                    sub_chunk_content = tokenizer.decode(
+                        chunk_tokens[start : start + max_token_size]
+                    )
+                    sub_tokens = chunk_tokens[start : start + max_token_size]
+                    results.append(
+                        {
+                            "tokens": len(sub_tokens),
+                            "content": sub_chunk_content.strip(),
+                            "chunk_order_index": len(results),
+                        }
+                    )
+            else:
+                results.append(
+                    {
+                        "tokens": token_count,
+                        "content": line.strip(),
+                        "chunk_order_index": index,
+                    }
+                )
+        
+        if results:
+            logger.info(f"chunking_by_file_format: csv/tsv results: {results[10:20]}")
+            return results
+    
+    # Handle Markdown files: split by paragraphs (double newlines) or sections
+    if file_ext == ".md":
+        # Try splitting by double newlines (paragraphs)
+        paragraphs = content.split("\n\n")
+        if len(paragraphs) > 1:
+            for index, para in enumerate(paragraphs):
+                para = para.strip()
+                if not para:
+                    continue
+                
+                tokens = tokenizer.encode(para)
+                token_count = len(tokens)
+                
+                # If paragraph exceeds max_token_size, split it further
+                if token_count > max_token_size:
+                    chunk_tokens = tokenizer.encode(para)
+                    for start in range(
+                        0, len(chunk_tokens), max_token_size - overlap_token_size
+                    ):
+                        sub_chunk_content = tokenizer.decode(
+                            chunk_tokens[start : start + max_token_size]
+                        )
+                        sub_tokens = chunk_tokens[start : start + max_token_size]
+                        results.append(
+                            {
+                                "tokens": len(sub_tokens),
+                                "content": sub_chunk_content.strip(),
+                                "chunk_order_index": len(results),
+                            }
+                        )
+                else:
+                    results.append(
+                        {
+                            "tokens": token_count,
+                            "content": para.strip(),
+                            "chunk_order_index": index,
+                        }
+                    )
+            
+            if results:
+                return results
+    
+    # Handle plain text files: split by paragraphs (double newlines)
+    if file_ext == ".txt":
+        # Try splitting by double newlines (paragraphs)
+        paragraphs = content.split("\n\n")
+        if len(paragraphs) > 1:
+            for index, para in enumerate(paragraphs):
+                para = para.strip()
+                if not para:
+                    continue
+                
+                tokens = tokenizer.encode(para)
+                token_count = len(tokens)
+                
+                # If paragraph exceeds max_token_size, split it further
+                if token_count > max_token_size:
+                    chunk_tokens = tokenizer.encode(para)
+                    for start in range(
+                        0, len(chunk_tokens), max_token_size - overlap_token_size
+                    ):
+                        sub_chunk_content = tokenizer.decode(
+                            chunk_tokens[start : start + max_token_size]
+                        )
+                        sub_tokens = chunk_tokens[start : start + max_token_size]
+                        results.append(
+                            {
+                                "tokens": len(sub_tokens),
+                                "content": sub_chunk_content.strip(),
+                                "chunk_order_index": len(results),
+                            }
+                        )
+                else:
+                    results.append(
+                        {
+                            "tokens": token_count,
+                            "content": para.strip(),
+                            "chunk_order_index": index,
+                        }
+                    )
+            
+            if results:
+                return results
+    # 打印content 到terminal
+    logger.info(f"Content (fallback): {content}...")  # 只打印前100个字符
+    
+    # Fall back to token-based chunking for other formats
+    # This will split content into fixed-size chunks based on token count
+    return chunking_by_token_size(
+        tokenizer,
+        content,
+        split_by_character,
+        split_by_character_only,
+        overlap_token_size,
+        max_token_size,
+        file_path,
+    )
 
 
 async def _handle_entity_relation_summary(
@@ -441,7 +792,7 @@ async def _handle_single_relationship_extraction(
     file_path: str = "unknown_source",
 ):
     if (
-        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+        len(record_attributes) != 6 or "relation" not in record_attributes[0]
     ):  # treat "relationship" and "relation" interchangeable
         if len(record_attributes) > 1 and "relation" in record_attributes[0]:
             logger.warning(
@@ -456,6 +807,9 @@ async def _handle_single_relationship_extraction(
         )
         target = sanitize_and_normalize_extracted_text(
             record_attributes[2], remove_inner_quotes=True
+        )
+        relationship_type = sanitize_and_normalize_extracted_text(
+            record_attributes[3], remove_inner_quotes=True
         )
 
         # Validate entity names after all cleaning steps
@@ -502,6 +856,7 @@ async def _handle_single_relationship_extraction(
             source_id=edge_source_id,
             file_path=file_path,
             timestamp=timestamp,
+            relationship_type=relationship_type
         )
 
     except ValueError as e:
@@ -983,6 +1338,7 @@ async def _process_extraction_result(
         entity_data = await _handle_single_entity_extraction(
             record_attributes, chunk_key, timestamp, file_path
         )
+        logger.info(f"_process_extraction_result: entity_data: {entity_data}, record_attributes: {record_attributes}")
         if entity_data is not None:
             truncated_name = _truncate_entity_identifier(
                 entity_data["entity_name"],
@@ -998,6 +1354,7 @@ async def _process_extraction_result(
         relationship_data = await _handle_single_relationship_extraction(
             record_attributes, chunk_key, timestamp, file_path
         )
+        logger.info(f"_process_extraction_result: relationship_data: {relationship_data}, record_attributes: {record_attributes}")
         if relationship_data is not None:
             truncated_source = _truncate_entity_identifier(
                 relationship_data["src_id"],
@@ -1586,6 +1943,7 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    graph_tag: str = "default",
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     already_entity_types = []
@@ -1594,7 +1952,7 @@ async def _merge_nodes_then_upsert(
     already_file_paths = []
 
     # 1. Get existing node data from knowledge graph
-    already_node = await knowledge_graph_inst.get_node(entity_name)
+    already_node = await knowledge_graph_inst.get_node(entity_name, graph_tag=graph_tag)
     if already_node:
         already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
@@ -1827,6 +2185,8 @@ async def _merge_nodes_then_upsert(
         created_at=int(time.time()),
         truncate=truncation_info,
     )
+    # Add graph_tag to node data
+    node_data["graph_tag"] = graph_tag
     await knowledge_graph_inst.upsert_node(
         entity_name,
         node_data=node_data,
@@ -1868,6 +2228,7 @@ async def _merge_edges_then_upsert(
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    graph_tag: str = "default",
 ):
     if src_id == tgt_id:
         return None
@@ -1878,6 +2239,7 @@ async def _merge_edges_then_upsert(
     already_description = []
     already_keywords = []
     already_file_paths = []
+    logger.info(f"_merge_edges_then_upsert: edge_data: {edges_data}")
 
     # 1. Get existing edge data from graph storage
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
@@ -2153,7 +2515,7 @@ async def _merge_edges_then_upsert(
     # 11. Update both graph and vector db
     for need_insert_id in [src_id, tgt_id]:
         # Optimization: Use get_node instead of has_node + get_node
-        existing_node = await knowledge_graph_inst.get_node(need_insert_id)
+        existing_node = await knowledge_graph_inst.get_node(need_insert_id, graph_tag=graph_tag)
 
         if existing_node is None:
             # Node doesn't exist - create new node
@@ -2167,6 +2529,8 @@ async def _merge_edges_then_upsert(
                 "created_at": node_created_at,
                 "truncate": "",
             }
+            # Add graph_tag to node data
+            node_data["graph_tag"] = graph_tag
             await knowledge_graph_inst.upsert_node(need_insert_id, node_data=node_data)
 
             # Update entity_chunks_storage for the newly created entity
@@ -2318,6 +2682,14 @@ async def _merge_edges_then_upsert(
                         pipeline_status["history_messages"].append(status_message)
 
     edge_created_at = int(time.time())
+    # Get relationship_type from edges_data (use first available, default to "DIRECTED")
+    relationship_type = "DIRECTED"
+    if edges_data:
+        for edge in edges_data:
+            if edge.get("relationship_type"):
+                relationship_type = edge.get("relationship_type")
+                break
+    
     await knowledge_graph_inst.upsert_edge(
         src_id,
         tgt_id,
@@ -2329,6 +2701,7 @@ async def _merge_edges_then_upsert(
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
+            relationship_type=relationship_type,
         ),
     )
 
@@ -2398,6 +2771,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    graph_tag: str = "default",
 ) -> None:
     """Two-phase merge: process all entities first, then all relationships
 
@@ -2423,6 +2797,7 @@ async def merge_nodes_and_edges(
         current_file_number: Current file number for logging
         total_files: Total files for logging
         file_path: File path for logging
+        graph_tag: Graph tag for isolating different knowledge graphs, used to add attribute to graph nodes
     """
 
     # Check for cancellation at the start of merge
@@ -2492,6 +2867,7 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        graph_tag=graph_tag,
                     )
 
                     return entity_data
@@ -2603,6 +2979,7 @@ async def merge_nodes_and_edges(
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
+                        graph_tag=graph_tag,
                     )
 
                     if edge_data is None:
