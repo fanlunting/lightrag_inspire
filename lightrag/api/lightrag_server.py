@@ -1283,6 +1283,8 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
+    sys.stdout.flush()
+    
     # Create log directory if it doesn't exist (create the directory itself, not its parent)
     os.makedirs(log_dir, exist_ok=True)
     
@@ -1291,11 +1293,14 @@ def configure_logging():
         try:
             os.remove(log_file_path)
             print(f"✓ Deleted existing log file: {log_file_path}")
+            sys.stdout.flush()
         except OSError as e:
             print(f"⚠ Warning: Could not delete existing log file: {e}")
             print("  The log file may be in use by another process.")
+            sys.stdout.flush()
     else:
         print(f"ℹ Log file does not exist yet, will be created: {log_file_path}")
+        sys.stdout.flush()
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
