@@ -2,7 +2,7 @@
 import os
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import setup_logger, get_env_value
+from lightrag.utils import get_env_value, prepare_log_file, setup_logger
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -10,12 +10,13 @@ from lightrag.constants import (
 )
 
 
-# Get log directory path from environment variable
+# Get log directory path from environment variable and recreate log file on startup
 log_dir = os.getenv("LOG_DIR", os.getcwd())
-log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
-
-# Ensure log directory exists
-os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+log_file_path = prepare_log_file(
+    log_dir=log_dir,
+    filename=DEFAULT_LOG_FILENAME,
+    recreate=True,
+)
 
 # Get log file max size and backup count from environment variables
 log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)

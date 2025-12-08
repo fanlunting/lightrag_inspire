@@ -329,6 +329,36 @@ def setup_logger(
         logger_instance.addFilter(path_filter)
 
 
+def prepare_log_file(
+    log_dir: str | None,
+    filename: str = DEFAULT_LOG_FILENAME,
+    recreate: bool = False,
+) -> str:
+    """Ensure log directory exists and optionally recreate the log file.
+
+    Args:
+        log_dir: Directory to store logs. Defaults to current working directory.
+        filename: Target log filename.
+        recreate: When True, delete the existing log file to start fresh.
+
+    Returns:
+        Absolute path to the prepared log file.
+    """
+    resolved_dir = os.path.abspath(log_dir or os.getcwd())
+    os.makedirs(resolved_dir, exist_ok=True)
+    log_file_path = os.path.join(resolved_dir, filename)
+
+    if recreate and os.path.exists(log_file_path):
+        try:
+            os.remove(log_file_path)
+        except OSError as exc:
+            logger.warning(
+                f"Failed to remove existing log file {log_file_path}: {exc}"
+            )
+
+    return log_file_path
+
+
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
 

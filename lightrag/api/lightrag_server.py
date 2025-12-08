@@ -38,11 +38,14 @@ from .config import (
     update_uvicorn_mode_config,
     get_default_host,
 )
-from lightrag.utils import get_env_value
+from lightrag.utils import (
+    EmbeddingFunc,
+    get_env_value,
+    prepare_log_file,
+)
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
-from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -1280,11 +1283,13 @@ def configure_logging():
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
+    log_file_path = prepare_log_file(
+        log_dir=log_dir,
+        filename=DEFAULT_LOG_FILENAME,
+        recreate=True,
+    )
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    # Create log directory if it doesn't exist (create the directory itself, not its parent)
-    os.makedirs(log_dir, exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
