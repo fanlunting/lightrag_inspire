@@ -435,6 +435,8 @@ class LightRAG:
         }
     )
 
+    graph_tag_addon_params: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # Storages Management
     # ---
 
@@ -1243,7 +1245,7 @@ class LightRAG:
 
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
+                self._process_extract_entities(inserting_chunks, graph_tag="default"),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1263,6 +1265,7 @@ class LightRAG:
         max_relation_types: int = 12,
         update_addon_params: bool = True,
         language: str | None = None,
+        graph_tag: str | None = None,
     ) -> dict[str, Any]:
         """Sync helper for :meth:`aderive_schema_types`."""
         loop = always_get_an_event_loop()
@@ -1276,6 +1279,7 @@ class LightRAG:
                 max_relation_types=max_relation_types,
                 update_addon_params=update_addon_params,
                 language=language,
+                graph_tag=graph_tag,
             )
         )
 
@@ -1289,6 +1293,7 @@ class LightRAG:
         max_relation_types: int = 12,
         update_addon_params: bool = True,
         language: str | None = None,
+        graph_tag: str | None = None,
     ) -> dict[str, Any]:
         """Infer domain-specific entity/relation labels from uploaded content.
 
@@ -1309,12 +1314,15 @@ class LightRAG:
             update_addon_params: If True, overwrite ``self.addon_params`` entries
                 when new labels are generated.
             language: Optional language override for the LLM response.
+            graph_tag: Optional graph tag whose schema should be updated. When omitted,
+                the global default schema is updated.
 
         Returns:
             dict: {
                 "entity_types": [...],
                 "relation_types": [...],
                 "raw_payload": <original LLM JSON payload>,
+                "graph_tag": graph_tag or None,
             }
         """
         if doc_ids is None and contents is None:
@@ -1322,6 +1330,7 @@ class LightRAG:
         if self.llm_model_func is None:
             raise RuntimeError("llm_model_func must be configured before calling this method.")
 
+        normalized_graph_tag = self._normalize_graph_tag(graph_tag)
         doc_id_list: list[str] = []
         if doc_ids is not None:
             doc_id_list = [doc_ids] if isinstance(doc_ids, str) else [doc for doc in doc_ids if doc]
@@ -1408,22 +1417,20 @@ class LightRAG:
             payload.get("relation_types"), max_relation_types
         )
 
-        if update_addon_params:
-            if derived_entity_types:
-                self.addon_params["entity_types"] = derived_entity_types
-            if derived_relation_types:
-                self.addon_params["relation_types"] = derived_relation_types
+        if update_addon_params and (
+            derived_entity_types or derived_relation_types or language or normalized_graph_tag
+        ):
+            self._update_graph_tag_schema(
+                normalized_graph_tag,
+                entity_types=derived_entity_types or None,
+                relation_types=derived_relation_types or None,
+                language=response_language,
+            )
 
-        entity_types = (
-            derived_entity_types
-            if derived_entity_types
-            else self.addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
-        )
-        relation_types = (
-            derived_relation_types
-            if derived_relation_types
-            else self.addon_params.get("relation_types", DEFAULT_RELATION_TYPES)
-        )
+        resolved_schema = self._resolve_addon_params(normalized_graph_tag)
+        entity_types = derived_entity_types or resolved_schema["entity_types"]
+        relation_types = derived_relation_types or resolved_schema["relation_types"]
+        resolved_language = resolved_schema["language"]
 
         logger.info(
             "Derived %d entity types and %d relation types from %d samples",
@@ -1436,6 +1443,8 @@ class LightRAG:
             "entity_types": entity_types,
             "relation_types": relation_types,
             "raw_payload": payload,
+            "graph_tag": normalized_graph_tag,
+            "language": resolved_language,
         }
 
     @staticmethod
@@ -1520,6 +1529,78 @@ class LightRAG:
             return result
 
         return result
+
+    @staticmethod
+    def _normalize_graph_tag(graph_tag: str | None) -> str | None:
+        if graph_tag is None:
+            return None
+        normalized = graph_tag.strip()
+        return normalized or None
+
+    def _update_graph_tag_schema(
+        self,
+        graph_tag: str | None,
+        entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
+        language: str | None = None,
+    ) -> None:
+        normalized = self._normalize_graph_tag(graph_tag)
+        target: dict[str, Any]
+        if normalized:
+            target = self.graph_tag_addon_params.setdefault(normalized, {})
+        else:
+            target = self.addon_params
+
+        if entity_types:
+            target["entity_types"] = list(dict.fromkeys(entity_types))
+        if relation_types:
+            target["relation_types"] = list(dict.fromkeys(relation_types))
+        if language:
+            target["language"] = language
+
+    def _resolve_addon_params(self, graph_tag: str | None = None) -> dict[str, Any]:
+        resolved = {
+            "language": self.addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE),
+            "entity_types": list(
+                self.addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
+            ),
+            "relation_types": list(
+                self.addon_params.get("relation_types", DEFAULT_RELATION_TYPES)
+            ),
+        }
+
+        normalized = self._normalize_graph_tag(graph_tag)
+        if normalized:
+            tag_params = self.graph_tag_addon_params.get(normalized)
+            if tag_params:
+                language = tag_params.get("language")
+                if language:
+                    resolved["language"] = language
+                if tag_params.get("entity_types"):
+                    resolved["entity_types"] = list(tag_params["entity_types"])
+                if tag_params.get("relation_types"):
+                    resolved["relation_types"] = list(tag_params["relation_types"])
+
+        return resolved
+
+    def get_schema_for_graph_tag(self, graph_tag: str | None = None) -> dict[str, Any]:
+        """Return the resolved addon parameters for the specified graph_tag."""
+        return self._resolve_addon_params(graph_tag)
+
+    def set_schema_for_graph_tag(
+        self,
+        graph_tag: str,
+        entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
+        language: str | None = None,
+    ) -> None:
+        """Manually configure addon parameters for a graph_tag."""
+        self._update_graph_tag_schema(
+            graph_tag,
+            entity_types=entity_types,
+            relation_types=relation_types,
+            language=language,
+        )
 
     async def apipeline_enqueue_documents(
         self,
@@ -2179,7 +2260,10 @@ class LightRAG:
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
                                 self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                                    chunks,
+                                    pipeline_status,
+                                    pipeline_status_lock,
+                                    graph_tag=graph_tag,
                                 )
                             )
                             chunk_results = await entity_relation_task
@@ -2456,12 +2540,18 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self,
+        chunk: dict[str, Any],
+        pipeline_status=None,
+        pipeline_status_lock=None,
+        graph_tag: str | None = None,
     ) -> list:
         try:
+            global_config = asdict(self)
+            global_config["addon_params"] = self._resolve_addon_params(graph_tag)
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=global_config,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
