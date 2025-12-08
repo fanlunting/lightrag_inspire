@@ -1294,6 +1294,8 @@ def configure_logging():
         except OSError as e:
             print(f"⚠ Warning: Could not delete existing log file: {e}")
             print("  The log file may be in use by another process.")
+    else:
+        print(f"ℹ Log file does not exist yet, will be created: {log_file_path}")
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
