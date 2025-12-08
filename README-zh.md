@@ -314,7 +314,7 @@ if __name__ == "__main__":
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
 | **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
-| **addon_params** | `dict` | 附加参数，例如`{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | language: English` |
+| **addon_params** | `dict` | 附加参数，例如 `{"language": "Simplified Chinese", "entity_types": ["organization", "person"], "relation_types": ["ASSOCIATED_WITH", "LOCATED_IN"]}`。可通过[`LightRAG.derive_schema_types`](#基于文档推断实体关系类型)自动生成这些列表，用于定制提取提示。 | `{"language": "English"}` |
 | **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -399,6 +399,26 @@ class QueryParam:
 ```
 
 > top_k的默认值可以通过环境变量TOP_K更改。
+
+### 基于文档推断实体关系类型
+
+LightRAG 现在可以根据上传内容自动生成领域相关的 `entity_types` 和 `relation_types`，用来指导后续的实体/关系提取。调用 `LightRAG.derive_schema_types`（或其异步版本 `aderive_schema_types`）即可完成推断：
+
+```python
+rag = LightRAG(llm_model_func=my_async_llm)
+await rag.initialize_storages()
+
+schema = await rag.aderive_schema_types(
+    contents=[open("sample_policy.txt").read()],
+    max_entity_types=10,
+    max_relation_types=8,
+)
+
+print("实体类型:", schema["entity_types"])
+print("关系类型:", schema["relation_types"])
+```
+
+默认情况下，推断成功后会自动更新 `rag.addon_params["entity_types"]` 和 `rag.addon_params["relation_types"]`，随后的 `insert` 流程会直接使用这些定制类型。如果只想获取建议而不修改运行时配置，可将 `update_addon_params=False`。
 
 ### LLM and Embedding注入
 

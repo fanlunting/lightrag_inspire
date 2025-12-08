@@ -38,6 +38,22 @@ DEFAULT_ENTITY_TYPES = [
     "NaturalObject",
 ]
 
+# Default relation categories to guide relationship extraction
+DEFAULT_RELATION_TYPES = [
+    "ASSOCIATED_WITH",
+    "ALLY",
+    "INTERACTS_WITH",
+    "LEADS",
+    "OBSERVES",
+    "PART_OF",
+    "CAUSES",
+    "BELONGS_TO",
+    "LOCATED_IN",
+    "USES",
+    "SUPPORTS",
+    "CONFLICTS_WITH",
+]
+
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 

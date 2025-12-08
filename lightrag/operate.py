@@ -55,6 +55,7 @@ from lightrag.constants import (
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_RELATION_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -3153,6 +3154,9 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", DEFAULT_ENTITY_TYPES
     )
+    relation_types = global_config["addon_params"].get(
+        "relation_types", DEFAULT_RELATION_TYPES
+    )
 
     examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
@@ -3160,6 +3164,7 @@ async def extract_entities(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=", ".join(entity_types),
+        relation_types=", ".join(relation_types),
         language=language,
     )
     # add example's format
@@ -3169,6 +3174,7 @@ async def extract_entities(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
+        relation_types=",".join(relation_types),
         examples=examples,
         language=language,
     )

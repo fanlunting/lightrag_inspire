@@ -323,7 +323,7 @@ A full list of LightRAG init parameters:
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Additional parameters, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`: sets example limit, entiy/relation extraction output language | language: English` |
+| **addon_params** | `dict` | Additional extraction hints, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person"], "relation_types": ["ASSOCIATED_WITH", "LOCATED_IN"]}`. Use [`LightRAG.derive_schema_types`](#derive-schema-types-from-documents) to auto-build these lists from uploaded docs. | `{"language": "English"}` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -402,6 +402,27 @@ class QueryParam:
 ```
 
 > default value of Top_k can be change by environment  variables  TOP_K.
+
+### Derive Schema Types from Documents
+
+LightRAG can now infer domain-specific `entity_types` and `relation_types` directly from uploaded content. Call `LightRAG.derive_schema_types` (or `await rag.aderive_schema_types(...)`) before indexing to generate focused labels that are then reused by the extraction prompts.
+
+```python
+rag = LightRAG(llm_model_func=my_async_llm)
+await rag.initialize_storages()
+
+# Use stored document ids or provide the raw text directly
+schema = await rag.aderive_schema_types(
+    contents=[open("sample_policy.txt").read()],
+    max_entity_types=10,
+    max_relation_types=8,
+)
+
+print("Entity types:", schema["entity_types"])
+print("Relation types:", schema["relation_types"])
+```
+
+By default, successful inference updates `rag.addon_params["entity_types"]` and `rag.addon_params["relation_types"]`, so subsequent calls to `insert` immediately benefit from the tailored prompt guidance. Pass `update_addon_params=False` if you only need the suggestions without mutating runtime state.
 
 ### LLM and Embedding Injection
 

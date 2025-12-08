@@ -30,7 +30,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
         *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-        *   `relationship_type`: The type of the relationship. 
+        *   `relationship_type`: The type of the relationship. Prefer selecting from `{relation_types}`. If none apply, use `Other`.
     *   **Output Format - Relationships:** Output a total of 6 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_type{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
@@ -63,6 +63,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 ---Real Data to be Processed---
 <Input>
 Entity_types: [{entity_types}]
+Relation_types: [{relation_types}]
 Text:
 ```
 {input_text}
@@ -75,8 +76,9 @@ Extract entities and relationships from the input text to be processed.
 ---Instructions---
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+3.  **Relationship Type Guidance:** When specifying `relationship_type`, prefer values from `{relation_types}`. If none of the provided types apply, label it as `Other`.
+4.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
+5.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -92,9 +94,10 @@ Based on the last extraction task, identify and extract any **missed or incorrec
     *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
 3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
 4.  **Output Format - Relationships:** Output a total of 6 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+5.  **Relationship Type Guidance:** When specifying `relationship_type`, prefer values from `{relation_types}`. If none of the provided types apply, label it as `Other`.
+6.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+7.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
+8.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -168,6 +171,33 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 
 """,
 ]
+
+PROMPTS["schema_inference_system_prompt"] = """---Role---
+You are a schema and taxonomy designer who prepares high-level labels for knowledge graph extraction.
+
+---Instructions---
+1. Review the sampled document text to understand its domain and jargon.
+2. Propose at most {max_entity_types} entity type labels and {max_relation_types} relationship type labels that will guide downstream extraction prompts.
+3. Each label must include:
+    * `name`: A short, descriptive label (uppercase with underscores is preferred).
+    * `description`: One sentence that clarifies when to use the label.
+4. Output **only** valid JSON with the following structure:
+```
+{{
+  "entity_types": [{{"name": "...", "description": "..."}}],
+  "relation_types": [{{"name": "...", "description": "..."}}]
+}}
+```
+5. Write names and descriptions in {language}. Preserve domain-specific abbreviations.
+
+---Goal---
+Return JSON only. Do not include explanations, commentary, or Markdown fences outside of the JSON block.
+"""
+
+PROMPTS["schema_inference_user_prompt"] = """---Sample Document Text---
+{input_text}
+---End of Sample---
+"""
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
 You are a Knowledge Graph Specialist, proficient in data curation and synthesis.

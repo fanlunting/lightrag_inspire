@@ -4,10 +4,13 @@ import traceback
 import asyncio
 import configparser
 import inspect
+import json
 import os
+import re
 import sys
 import time
 import warnings
+import json_repair
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import partial
@@ -48,6 +51,7 @@ from lightrag.constants import (
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_RELATION_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -112,6 +116,7 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    use_llm_func_with_cache,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -424,7 +429,9 @@ class LightRAG:
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
-            #"relation_types": get_env_value("RELATION_TYPES", DEFAULT_RELATION_TYPES, list),
+            "relation_types": get_env_value(
+                "RELATION_TYPES", DEFAULT_RELATION_TYPES, list
+            ),
         }
     )
 
@@ -1245,6 +1252,274 @@ class LightRAG:
         finally:
             if update_storage:
                 await self._insert_done()
+
+    def derive_schema_types(
+        self,
+        doc_ids: str | list[str] | None = None,
+        contents: str | list[str] | None = None,
+        sample_size: int = 5,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 12,
+        max_relation_types: int = 12,
+        update_addon_params: bool = True,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Sync helper for :meth:`aderive_schema_types`."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.aderive_schema_types(
+                doc_ids=doc_ids,
+                contents=contents,
+                sample_size=sample_size,
+                max_sample_tokens=max_sample_tokens,
+                max_entity_types=max_entity_types,
+                max_relation_types=max_relation_types,
+                update_addon_params=update_addon_params,
+                language=language,
+            )
+        )
+
+    async def aderive_schema_types(
+        self,
+        doc_ids: str | list[str] | None = None,
+        contents: str | list[str] | None = None,
+        sample_size: int = 5,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 12,
+        max_relation_types: int = 12,
+        update_addon_params: bool = True,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Infer domain-specific entity/relation labels from uploaded content.
+
+        This utility inspects the provided document contents, asks the configured
+        LLM to propose concise `entity_types` and `relation_types`, and optionally
+        updates ``self.addon_params`` so that subsequent extraction prompts use the
+        inferred schema instead of the generic defaults.
+
+        Args:
+            doc_ids: Optional single document ID or list of IDs already stored in
+                ``self.full_docs`` whose content should be sampled.
+            contents: Optional raw text (or list of texts) to analyse directly
+                without relying on stored documents.
+            sample_size: Maximum number of text samples to send to the LLM.
+            max_sample_tokens: Token budget for the concatenated sample text.
+            max_entity_types: Maximum number of entity type labels to request.
+            max_relation_types: Maximum number of relation type labels to request.
+            update_addon_params: If True, overwrite ``self.addon_params`` entries
+                when new labels are generated.
+            language: Optional language override for the LLM response.
+
+        Returns:
+            dict: {
+                "entity_types": [...],
+                "relation_types": [...],
+                "raw_payload": <original LLM JSON payload>,
+            }
+        """
+        if doc_ids is None and contents is None:
+            raise ValueError("Either doc_ids or contents must be provided.")
+        if self.llm_model_func is None:
+            raise RuntimeError("llm_model_func must be configured before calling this method.")
+
+        doc_id_list: list[str] = []
+        if doc_ids is not None:
+            doc_id_list = [doc_ids] if isinstance(doc_ids, str) else [doc for doc in doc_ids if doc]
+        content_list: list[str] = []
+        if contents is not None:
+            content_list = (
+                [contents] if isinstance(contents, str) else [text for text in contents if text]
+            )
+
+        raw_contents: list[str] = []
+
+        for doc_id in doc_id_list:
+            doc_id = doc_id.strip()
+            if not doc_id:
+                continue
+            content_data = await self.full_docs.get_by_id(doc_id)
+            if content_data and content_data.get("content"):
+                raw_contents.append(content_data["content"])
+            else:
+                logger.warning("No stored content found for document id `%s`", doc_id)
+
+        raw_contents.extend(content_list)
+
+        normalized_samples = [
+            sanitize_text_for_encoding(text).strip()
+            for text in raw_contents
+            if isinstance(text, str) and text.strip()
+        ]
+        if not normalized_samples:
+            raise ValueError("No valid content found for schema derivation.")
+
+        if sample_size > 0:
+            normalized_samples = normalized_samples[:sample_size]
+
+        combined_text = "\n\n---\n\n".join(normalized_samples)
+        schema_token_limit = max(512, max_sample_tokens)
+        truncated_text = combined_text
+        if self.tokenizer is not None:
+            try:
+                tokens = self.tokenizer.encode(combined_text)
+                if len(tokens) > schema_token_limit:
+                    truncated_text = self.tokenizer.decode(tokens[:schema_token_limit])
+            except Exception as exc:
+                logger.warning(
+                    "Tokenizer failed when preparing schema samples (falling back to chars): %s",
+                    exc,
+                )
+                truncated_text = combined_text[: schema_token_limit * 4]
+        else:
+            truncated_text = combined_text[: schema_token_limit * 4]
+
+        if not truncated_text.strip():
+            raise ValueError("Prepared schema sample text is empty after truncation.")
+
+        response_language = (
+            language
+            or self.addon_params.get("language")
+            or DEFAULT_SUMMARY_LANGUAGE
+        )
+
+        schema_context = {
+            "language": response_language,
+            "max_entity_types": max_entity_types,
+            "max_relation_types": max_relation_types,
+            "input_text": truncated_text,
+        }
+        system_prompt = PROMPTS["schema_inference_system_prompt"].format(**schema_context)
+        user_prompt = PROMPTS["schema_inference_user_prompt"].format(**schema_context)
+
+        response_text, _ = await use_llm_func_with_cache(
+            user_prompt,
+            self.llm_model_func,
+            system_prompt=system_prompt,
+            llm_response_cache=self.llm_response_cache,
+            cache_type="schema_inference",
+        )
+
+        payload = self._parse_schema_payload(response_text)
+
+        derived_entity_types = self._normalize_schema_list(
+            payload.get("entity_types"), max_entity_types
+        )
+        derived_relation_types = self._normalize_schema_list(
+            payload.get("relation_types"), max_relation_types
+        )
+
+        if update_addon_params:
+            if derived_entity_types:
+                self.addon_params["entity_types"] = derived_entity_types
+            if derived_relation_types:
+                self.addon_params["relation_types"] = derived_relation_types
+
+        entity_types = (
+            derived_entity_types
+            if derived_entity_types
+            else self.addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
+        )
+        relation_types = (
+            derived_relation_types
+            if derived_relation_types
+            else self.addon_params.get("relation_types", DEFAULT_RELATION_TYPES)
+        )
+
+        logger.info(
+            "Derived %d entity types and %d relation types from %d samples",
+            len(entity_types),
+            len(relation_types),
+            len(normalized_samples),
+        )
+
+        return {
+            "entity_types": entity_types,
+            "relation_types": relation_types,
+            "raw_payload": payload,
+        }
+
+    @staticmethod
+    def _parse_schema_payload(raw_text: str) -> dict[str, Any]:
+        """Extract JSON payload from an LLM response."""
+        if not raw_text:
+            return {}
+
+        cleaned = raw_text.strip()
+        if "```" in cleaned:
+            for block in cleaned.split("```"):
+                block = block.strip()
+                if block.startswith("{") and block.endswith("}"):
+                    cleaned = block
+                    break
+
+        if "{" in cleaned and "}" in cleaned:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}") + 1
+            cleaned = cleaned[start:end]
+
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            try:
+                repaired = json_repair.repair(cleaned)
+                parsed = json.loads(repaired)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception as exc:
+                logger.warning("Unable to repair schema payload JSON: %s", exc)
+
+        logger.warning("Failed to parse schema inference output, returning empty payload.")
+        return {}
+
+    @staticmethod
+    def _normalize_schema_list(data: Any, limit: int) -> list[str]:
+        """Normalize schema suggestions into a deduplicated, ordered list."""
+        if not data:
+            return []
+
+        limit = max(1, limit)
+        seen: set[str] = set()
+        result: list[str] = []
+
+        def _add_candidate(value: str) -> bool:
+            candidate = value.strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                result.append(candidate)
+            return len(result) >= limit
+
+        if isinstance(data, dict):
+            if {"name", "type", "label"} & set(data.keys()):
+                name = data.get("name") or data.get("type") or data.get("label") or data.get("value")
+                if isinstance(name, str):
+                    _add_candidate(name)
+                return result
+
+            for key in ("items", "values", "types", "labels"):
+                if key in data:
+                    return LightRAG._normalize_schema_list(data[key], limit)
+
+        if isinstance(data, (list, tuple, set)):
+            for item in data:
+                if isinstance(item, str):
+                    if _add_candidate(item):
+                        break
+                elif isinstance(item, dict):
+                    name = item.get("name") or item.get("type") or item.get("label") or item.get("value")
+                    if isinstance(name, str) and _add_candidate(name):
+                        break
+            return result
+
+        if isinstance(data, str):
+            parts = [part.strip() for part in re.split(r"[,;\n]+", data) if part.strip()]
+            for part in parts:
+                if _add_candidate(part):
+                    break
+            return result
+
+        return result
 
     async def apipeline_enqueue_documents(
         self,
