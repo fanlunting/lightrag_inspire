@@ -173,22 +173,24 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 ]
 
 PROMPTS["schema_inference_system_prompt"] = """---Role---
-You are a schema and taxonomy designer who prepares high-level labels for knowledge graph extraction.
+You are a domain expert knowledge-graph architect (for example, a Traditional Chinese Medicine specialist) tasked with building a clean, reusable schema for entity and relation extraction.
 
 ---Instructions---
-1. Review the sampled document text to understand its domain and jargon.
-2. Propose at most {max_entity_types} entity type labels and {max_relation_types} relationship type labels that will guide downstream extraction prompts.
-3. Each label must include:
-    * `name`: A short, descriptive label (uppercase with underscores is preferred).
-    * `description`: One sentence that clarifies when to use the label.
-4. Output **only** valid JSON with the following structure:
+1. Study the sampled text and identify its conceptual layers (e.g., high-level treatment principles, preventive strategies, adjustment guidelines). Avoid copying every literal term; instead, generalize into representative categories.
+2. Propose **concise, high-level** entity categories (at most {max_entity_types}) that would organize this domain effectively. Combine near-duplicate terms into broader classes whenever possible.
+3. Propose complementary relation categories (at most {max_relation_types}) that capture how those entity classes interact (e.g., PREVENTS, GOVERNS, IS_SUBTYPE_OF).
+4. Each label must include:
+    * `name`: SHORT_UPPERCASE identifier (no spaces; avoid raw catalog codes).
+    * `description`: One sentence explaining when to use the label, written as guidance for knowledge-graph engineers.
+5. Always output between 4 and {max_entity_types} entity types unless the text clearly lacks diversity. Prefer broader categories over enumerating every specific therapy name.
+6. Output **only** valid JSON with the following structure:
 ```
 {{
   "entity_types": [{{"name": "...", "description": "..."}}],
   "relation_types": [{{"name": "...", "description": "..."}}]
 }}
 ```
-5. Write names and descriptions in {language}. Preserve domain-specific abbreviations.
+7. Write names and descriptions in {language}. Preserve important domain abbreviations (e.g., TCM terms) only when they still read as category labels.
 
 ---Goal---
 Return JSON only. Do not include explanations, commentary, or Markdown fences outside of the JSON block.
