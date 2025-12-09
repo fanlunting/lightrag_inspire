@@ -173,27 +173,56 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 ]
 
 PROMPTS["schema_inference_system_prompt"] = """---Role---
-You are a domain expert knowledge-graph architect (for example, a Traditional Chinese Medicine specialist) tasked with building a clean, reusable schema for entity and relation extraction.
+你是中医领域的知识图谱架构师，任务是设计高层次、可复用的本体模式。
 
----Instructions---
-1. Study the sampled text and identify its conceptual layers (e.g., high-level treatment principles, preventive strategies, adjustment guidelines). Avoid copying every literal term; instead, generalize into representative categories.
-2. Propose **concise, high-level** entity categories (at most {max_entity_types}) that would organize this domain effectively. Combine near-duplicate terms into broader classes whenever possible.
-3. Propose complementary relation categories (at most {max_relation_types}) that capture how those entity classes interact (e.g., PREVENTS, GOVERNS, IS_SUBTYPE_OF).
-4. Each label must include:
-    * `name`: SHORT_UPPERCASE identifier (no spaces; avoid raw catalog codes).
-    * `description`: One sentence explaining when to use the label, written as guidance for knowledge-graph engineers.
-5. Always output between 4 and {max_entity_types} entity types unless the text clearly lacks diversity. Prefer broader categories over enumerating every specific therapy name.
-6. Output **only** valid JSON with the following structure:
-```
+---核心抽象化指令---
+**最重要的要求：必须进行高度抽象！**
+
+1. **严格避免具体术语**：
+   - 不要列出文本中的任何具体治法名称（如“辛温解表”“清热泻火”）
+   - 不要列出具体的中医原则名称（如“扶正祛邪”“三因制宜”）
+   - 请思考这些术语背后的抽象概念类别
+
+2. **从四个抽象层次思考**：
+   **A. 理论层次**（最高抽象）
+   - 核心哲学概念：阴阳、五行、气血等理论框架
+   - 治疗指导思想：整体观念、辨证论治等宏观思想
+
+   **B. 功能层次**
+   - 治疗目标类：恢复平衡、消除病因、调和脏腑等
+   - 治疗作用类：扶助正气、祛除病邪、调和功能等
+
+   **C. 方法论层次**
+   - 策略类别：调整性策略、补充性策略、清除性策略
+   - 方法类型：外治法、内治法、预防法、治疗法
+
+   **D. 关系层次**
+   - 概念间的基本逻辑关系：包含、对立、转化、协同等
+
+3. **抽象标准**：
+   - 每个实体类型至少要比原文具体术语抽象 2-3 个层级
+   - 一个实体类型应能概括文本中 5-10 个具体术语
+   - 实体名称和描述全部使用中文，名称应体现概念类别（例如“预防策略”“调理原则”）
+
+---具体数量要求---
+- 实体类型数量 ≤ {max_entity_types}
+- 关系类型数量 ≤ {max_relation_types}
+
+---输出格式---
+只输出以下 JSON，名称与描述均为中文：
+```json
 {{
-  "entity_types": [{{"name": "...", "description": "..."}}],
-  "relation_types": [{{"name": "...", "description": "..."}}]
+  "entity_types": [
+    {{"name": "抽象类别名称", "description": "对应的中文说明"}}  
+  ],
+  "relation_types": [
+    {{"name": "抽象关系名称", "description": "中文说明该关系表示的语义联系"}}
+  ]
 }}
 ```
-7. Write names and descriptions in {language}. Preserve important domain abbreviations (e.g., TCM terms) only when they still read as category labels.
 
 ---Goal---
-Return JSON only. Do not include explanations, commentary, or Markdown fences outside of the JSON block.
+仅返回 JSON，不要添加任何额外解释、Markdown、示例或注释。
 """
 
 PROMPTS["schema_inference_user_prompt"] = """---Sample Document Text---
