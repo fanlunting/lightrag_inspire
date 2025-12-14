@@ -30,7 +30,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
         *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
         *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
         *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-        *   `relationship_type`: The type of the relationship. 
+        *   `relationship_type`: The type of the relationship. Prefer selecting from `{relation_types}`. If none apply, use `Other`.
     *   **Output Format - Relationships:** Output a total of 6 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
         *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_type{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
@@ -63,6 +63,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 ---Real Data to be Processed---
 <Input>
 Entity_types: [{entity_types}]
+Relation_types: [{relation_types}]
 Text:
 ```
 {input_text}
@@ -75,8 +76,9 @@ Extract entities and relationships from the input text to be processed.
 ---Instructions---
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-3.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
-4.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
+3.  **Relationship Type Guidance:** When specifying `relationship_type`, prefer values from `{relation_types}`. If none of the provided types apply, label it as `Other`.
+4.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant entities and relationships have been extracted and presented.
+5.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 
 <Output>
 """
@@ -92,10 +94,10 @@ Based on the last extraction task, identify and extract any **missed or incorrec
     *   If an entity or relationship was **truncated, had missing fields, or was otherwise incorrectly formatted** in the last task, re-output the *corrected and complete* version in the specified format.
 3.  **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
 4.  **Output Format - Relationships:** Output a total of 6 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-5.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
-6.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
-7.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
-
+5.  **Relationship Type Guidance:** When specifying `relationship_type`, prefer values from `{relation_types}`. If none of the provided types apply, label it as `Other`.
+6.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
+7.  **Completion Signal:** Output `{completion_delimiter}` as the final line after all relevant missing or corrected entities and relationships have been extracted and presented.
+8.  **Output Language:** Ensure the output language is {language}. Proper nouns (e.g., personal names, place names, organization names) must be kept in their original language and not translated.
 <Output>
 """
 
@@ -168,6 +170,64 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 
 """,
 ]
+PROMPTS["schema_inference_system_prompt"] = """---Role---
+你是中医领域的知识图谱架构师，任务是设计高层次、可复用的本体模式。
+
+---核心抽象化指令---
+**最重要的要求：必须进行高度抽象！**
+
+1. **严格避免具体术语**：
+   - 不要列出文本中的任何具体治法名称（如“辛温解表”“清热泻火”）
+   - 不要列出具体的中医原则名称（如“扶正祛邪”“三因制宜”）
+   - 请思考这些术语背后的抽象概念类别
+
+2. **从四个抽象层次思考**：
+   **A. 理论层次**（最高抽象）
+   - 核心哲学概念：阴阳、五行、气血等理论框架
+   - 治疗指导思想：整体观念、辨证论治等宏观思想
+
+   **B. 功能层次**
+   - 治疗目标类：恢复平衡、消除病因、调和脏腑等
+   - 治疗作用类：扶助正气、祛除病邪、调和功能等
+
+   **C. 方法论层次**
+   - 策略类别：调整性策略、补充性策略、清除性策略
+   - 方法类型：外治法、内治法、预防法、治疗法
+
+   **D. 关系层次**
+   - 概念间的基本逻辑关系：包含、对立、转化、协同等
+
+3. **抽象标准**：
+   - 每个实体类型至少要比原文具体术语抽象 2-3 个层级
+   - 一个实体类型应能概括文本中 5-10 个具体术语
+   - 实体名称和描述全部使用中文，名称应体现概念类别（例如“预防策略”“调理原则”）
+
+---具体数量要求---
+- 实体类型数量 ≤ {max_entity_types}
+- 关系类型数量 ≤ {max_relation_types}
+
+---输出格式---
+只输出以下 JSON，名称与描述均为中文：
+```json
+{{
+  "entity_types": [
+    {{"name": "抽象类别名称", "description": "对应的中文说明"}}  
+  ],
+  "relation_types": [
+    {{"name": "抽象关系名称", "description": "中文说明该关系表示的语义联系"}}
+  ]
+}}
+```
+
+---Goal---
+仅返回 JSON，不要添加任何额外解释、Markdown、示例或注释。
+"""
+
+PROMPTS["schema_inference_user_prompt"] = """---Sample Document Text---
+{input_text}
+---End of Sample---
+"""
+
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
 You are a Knowledge Graph Specialist, proficient in data curation and synthesis.

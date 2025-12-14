@@ -92,6 +92,7 @@ class LLMConfigCache:
         self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
+        logger.info(f"args.llm_binding: {args.llm_binding}")
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -1283,8 +1284,16 @@ def configure_logging():
     log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
-    # Create log directory if it doesn't exist (create the directory itself, not its parent)
     os.makedirs(log_dir, exist_ok=True)
+    # Delete existing log file to recreate it on each startup
+    # Delete existing log file to recreate it on each startup
+    if os.path.exists(log_file_path):
+        try:
+            os.remove(log_file_path)
+            print(f"✓ Deleted existing log file: {log_file_path}")
+        except OSError as e:
+            print(f"⚠ Warning: Could not delete existing log file: {e}")
+            print("  The log file may be in use by another process.")
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)

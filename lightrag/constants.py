@@ -11,7 +11,7 @@ DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
+DEFAULT_SUMMARY_LANGUAGE = "Chinese"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
 
@@ -36,6 +36,22 @@ DEFAULT_ENTITY_TYPES = [
     "Data",
     "Artifact",
     "NaturalObject",
+]
+
+# Default relation categories to guide relationship extraction
+DEFAULT_RELATION_TYPES = [
+    "ASSOCIATED_WITH",
+    "ALLY",
+    "INTERACTS_WITH",
+    "LEADS",
+    "OBSERVES",
+    "PART_OF",
+    "CAUSES",
+    "BELONGS_TO",
+    "LOCATED_IN",
+    "USES",
+    "SUPPORTS",
+    "CONFLICTS_WITH",
 ]
 
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)

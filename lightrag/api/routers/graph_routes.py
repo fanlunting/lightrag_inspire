@@ -89,7 +89,7 @@ class RelationCreateRequest(BaseModel):
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
+    @router.get("/graph//node/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
         """
         Get all graph labels

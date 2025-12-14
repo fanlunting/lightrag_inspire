@@ -153,8 +153,8 @@ async def initialize_rag():
 
     rag = LightRAG(
         working_dir=WORKING_DIR,
-        llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
+        llm_model_func=llm_model_func, # 大模型api
+        embedding_func=EmbeddingFunc( # vector embedding api, 
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
             func=lambda texts: openai_embed(
@@ -258,23 +258,32 @@ async def main():
                 result_strings = result_strings + row_strings + "\t"
             
             return result_strings
-        cure_entity_types = ["治法", "治疗阶段", "治疗目标", "治疗手段", "核心概念", "别名"]
-        cure_file = "/Users/mac/Downloads/lightrag_inspire/data/cure_output.xlsx"
-        rag.addon_params["entity_types"] = cure_entity_types
+        #cure_entity_types = ["治法", "治疗阶段", "治疗目标", "治疗手段", "核心概念", "别名"]
+        # llm 小模型，content，自动给出几个type, {relation_type}, must 
+        cure_file = "/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json"
+        #rag.addon_params["entity_types"] = cure_entity_types
         # 打开一个excel文件，读取所有sheet，每个sheet作为一个document插入
-        content = excel_to_strings(cure_file)
-        print("before insert",  content[:100])
-        print("before insert", type(content))
-        await rag.ainsert(content, file_paths=cure_file, graph_tag="standard_cure")
+        #content = excel_to_strings(cure_file)
+        with open(cure_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        print("before derive_schema_types", content[:1000])
+        await rag.aderive_schema_types(contents=content, graph_tag="standard_cure")
+        print("after derive_schema_types", rag.graph_tag_addon_params["standard_cure"]["entity_types"])
+        await rag.ainsert(content, file_paths=curelightrag/api/run_with_gunicorn.py_file, graph_tag="standard_cure")
 
-        decease_entity_types = ["疾病", "症状", "病因", "病机", "病位", "证型", "证候", "别名"]
+        #decease_entity_types = ["疾病", "症状", "病因", "病机", "病位", "证型", "证候", "别名"]
         decease_file = "/Users/mac/Downloads/lightrag_inspire/data/decease_output.xlsx"
-        rag.addon_params["entity_types"] = decease_entity_types
-        content = excel_to_strings(decease_file)
-        await rag.ainsert(content, file_paths=decease_file, graph_tag="standard_decease")
+        # #rag.addon_params["entity_types"] = decease_entity_types
+        content_decease = excel_to_strings(decease_file)
+        print("before insert",  content_decease[:10])
+        #await rag.aderive_schema_types(contents=content_decease, graph_tag="standard_decease")
+        print("after derive_schema_types", rag.graph_tag_addon_params["standard_decease"]["entity_types"])
+        print("rag.addon_params: ", rag.addon_params)
+        # await rag.ainsert(content, file_paths=decease_file, graph_tag="default")
+        # await rag.ainsert(content, file_paths=decease_file, graph_tag="standard_decease")
 
-        # merge
-        await rag.amerge_graph(graph_tags=["standard_cure", "standard_decease"])
+        # merge, graph_tag_list
+        #await rag.amerge_graph(graph_tags=["standard_cure", "standard_decease"])
         
 
         # Perform naive search

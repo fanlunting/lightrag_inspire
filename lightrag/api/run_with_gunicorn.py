@@ -111,6 +111,9 @@ def main():
 
     # Check and install dependencies
     check_and_install_dependencies()
+    # Configure logging before starting Gunicorn
+    from lightrag.api.lightrag_server import configure_logging
+    configure_logging()
 
     # Note: Signal handlers are NOT registered here because:
     # - Master cleanup already handled by gunicorn_config.on_exit()
