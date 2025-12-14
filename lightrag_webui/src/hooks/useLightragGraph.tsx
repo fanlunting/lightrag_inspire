@@ -88,6 +88,8 @@ export type EdgeType = {
   size?: number
   color?: string
   hidden?: boolean
+  relationship_type?: string
+  fusion_tag?: string
 }
 
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
@@ -219,12 +221,16 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   for (const rawEdge of rawGraph?.edges ?? []) {
     // Get weight from edge properties or default to 1
     const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
+    const relationshipType = rawEdge.properties?.relationship_type
+    const fusionTag = rawEdge.properties?.fusion_tag
 
     rawEdge.dynamicId = graph.addEdge(rawEdge.source, rawEdge.target, {
       label: rawEdge.properties?.keywords || undefined,
       size: weight, // Set initial size based on weight
       originalWeight: weight, // Store original weight for recalculation
-      type: 'curvedNoArrow' // Explicitly set edge type to no arrow
+      type: 'curvedNoArrow', // Explicitly set edge type to no arrow
+      relationship_type: relationshipType,
+      fusion_tag: fusionTag
     })
   }
 

@@ -24,6 +24,26 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type GraphTagsMergeRequest = {
+  graph_tags: string[]
+  similarity_threshold: number
+  top_k: number
+  llm_confirm: boolean
+}
+
+export type GraphTagsMergeResult = {
+  fusion_tag: string
+  source_graph_tags: string[]
+  same_edges: number
+  similar_edges: number
+}
+
+export type GraphTagsMergeResponse = {
+  status: 'success' | 'failure'
+  message: string
+  data: GraphTagsMergeResult
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -348,6 +368,18 @@ export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit
 
 export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
   const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+  return response.data
+}
+
+export const getGraphTags = async (query: string = '', limit: number = 300): Promise<string[]> => {
+  const response = await axiosInstance.get(
+    `/graph/tag/list?q=${encodeURIComponent(query)}&limit=${limit}`
+  )
+  return response.data
+}
+
+export const mergeGraphTagsInPlace = async (request: GraphTagsMergeRequest): Promise<GraphTagsMergeResponse> => {
+  const response = await axiosInstance.post('/graph/tags/merge', request)
   return response.data
 }
 

@@ -43,6 +43,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+  const fusionTagFilter = useGraphStore.use.fusionTagFilter()
 
   // Track system theme changes when theme is set to 'system'
   const [systemThemeIsDark, setSystemThemeIsDark] = useState(() =>
@@ -300,6 +301,15 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
         const newData = { ...data, hidden: false, labelColor, color: edgeColor }
 
+        // Fusion filter: only show edges with matching fusion_tag
+        if (fusionTagFilter) {
+          const edgeFusionTag = graph.getEdgeAttribute(edge, 'fusion_tag')
+          if (edgeFusionTag !== fusionTagFilter) {
+            newData.hidden = true
+            return newData
+          }
+        }
+
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
           // Choose edge highlight color based on theme
@@ -353,7 +363,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     hideUnselectedEdges,
     enableEdgeEvents,
     renderEdgeLabels,
-    renderLabels
+    renderLabels,
+    fusionTagFilter
   ])
 
   return null

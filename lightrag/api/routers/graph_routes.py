@@ -2,12 +2,14 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
+from lightrag.utils import get_graph_db_lock
+from lightrag.constants import GRAPH_FIELD_SEP
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -85,11 +87,36 @@ class RelationCreateRequest(BaseModel):
         ],
     )
 
+class GraphTagListResponse(BaseModel):
+    tags: List[str]
+
+
+class GraphTagsMergeRequest(BaseModel):
+    graph_tags: List[str] = Field(
+        ...,
+        description="List of graph_tag values to participate in in-place fusion.",
+        min_length=1,
+        examples=[["standard_cure", "standard_decease"]],
+    )
+    similarity_threshold: float = Field(
+        0.85, description="Cosine similarity threshold for SIMILAR edges", ge=0.0, le=1.0
+    )
+    top_k: int = Field(8, description="Vector neighbor top_k per entity", ge=1, le=100)
+    llm_confirm: bool = Field(
+        True, description="If true, use LLM YES/NO confirmation for SIMILAR edges."
+    )
+
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.get("/graph//node/list", dependencies=[Depends(combined_auth)])
+    # Backward compatible path (legacy clients)
+    @router.get(
+        "/graph//node/list",
+        dependencies=[Depends(combined_auth)],
+        include_in_schema=False,
+    )
+    @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
         """
         Get all graph labels
@@ -154,6 +181,93 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error searching labels: {str(e)}"
+            )
+
+    @router.get("/graph/tag/list", dependencies=[Depends(combined_auth)])
+    async def list_graph_tags(
+        q: str = Query("", description="Optional search query (case-insensitive)"),
+        limit: int = Query(
+            300, description="Maximum number of tags to return", ge=1, le=5000
+        ),
+        include_default: bool = Query(
+            True, description="If true, include 'default' when graph_tag is missing."
+        ),
+    ) -> List[str]:
+        """
+        List distinct `graph_tag` values currently present in the graph storage.
+
+        Notes:
+        - This scans all nodes and extracts `graph_tag` values.
+        - `graph_tag` may contain multiple tags separated by GRAPH_FIELD_SEP.
+        """
+        try:
+            graph_db_lock = get_graph_db_lock(enable_logging=False)
+            async with graph_db_lock:
+                nodes = await rag.chunk_entity_relation_graph.get_all_nodes()
+
+            tags: set[str] = set()
+            for node in nodes:
+                raw = node.get("graph_tag")
+                if not raw:
+                    if include_default:
+                        tags.add("default")
+                    continue
+
+                parts: list[str]
+                if isinstance(raw, str):
+                    parts = [p for p in raw.split(GRAPH_FIELD_SEP) if p]
+                elif isinstance(raw, list):
+                    parts = [str(v) for v in raw if str(v)]
+                else:
+                    parts = [str(raw)]
+
+                for t in parts:
+                    t = t.strip()
+                    if t:
+                        tags.add(t)
+
+            query = (q or "").strip().lower()
+            result = sorted(tags)
+            if query:
+                result = [t for t in result if query in t.lower()]
+            return result[:limit]
+        except Exception as e:
+            logger.error(f"Error listing graph tags: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error listing graph tags: {str(e)}"
+            )
+
+    @router.post("/graph/tags/merge", dependencies=[Depends(combined_auth)])
+    async def merge_graphs_by_tags(request: GraphTagsMergeRequest):
+        """
+        In-place graph-tag fusion via `rag.amerge_graph`.
+
+        This does NOT create a new fused graph_tag. It only adds new edges:
+        - SAME_AS
+        - SIMILAR
+        Each new edge is annotated with `fusion_tag`.
+        """
+        try:
+            result = await rag.amerge_graph(
+                graph_tags=request.graph_tags,
+                similarity_threshold=request.similarity_threshold,
+                top_k=request.top_k,
+                llm_confirm=request.llm_confirm,
+            )
+            return {
+                "status": "success",
+                "message": "Graph tags merged (in-place) successfully",
+                "data": result,
+            }
+        except ValueError as ve:
+            logger.error(f"Validation error merging graph tags {request.graph_tags}: {str(ve)}")
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Error merging graph tags {request.graph_tags}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error merging graph tags: {str(e)}"
             )
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
