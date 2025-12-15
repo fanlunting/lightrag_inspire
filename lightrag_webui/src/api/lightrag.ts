@@ -24,6 +24,26 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type GraphTagsMergeRequest = {
+  graph_tags: string[]
+  similarity_threshold: number
+  top_k: number
+  llm_confirm: boolean
+}
+
+export type GraphTagsMergeResult = {
+  fusion_tag: string
+  source_graph_tags: string[]
+  same_edges: number
+  similar_edges: number
+}
+
+export type GraphTagsMergeResponse = {
+  status: 'success' | 'failure'
+  message: string
+  data: GraphTagsMergeResult
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -351,6 +371,18 @@ export const searchLabels = async (query: string, limit: number = searchLabelsDe
   return response.data
 }
 
+export const getGraphTags = async (query: string = '', limit: number = 300): Promise<string[]> => {
+  const response = await axiosInstance.get(
+    `/graph/tag/list?q=${encodeURIComponent(query)}&limit=${limit}`
+  )
+  return response.data
+}
+
+export const mergeGraphTagsInPlace = async (request: GraphTagsMergeRequest): Promise<GraphTagsMergeResponse> => {
+  const response = await axiosInstance.post('/graph/tags/merge', request)
+  return response.data
+}
+
 export const checkHealth = async (): Promise<
   LightragStatus | { status: 'error'; message: string }
 > => {
@@ -587,10 +619,14 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  graphTag?: string
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  if (graphTag && graphTag.trim()) {
+    formData.append('graph_tag', graphTag.trim())
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {

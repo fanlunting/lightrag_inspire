@@ -137,6 +137,10 @@ interface GraphState {
   graphDataVersion: number
   incrementGraphDataVersion: () => void
 
+  // Fusion edge filtering (for amerge_graph fusion_tag)
+  fusionTagFilter: string | null
+  setFusionTagFilter: (fusionTag: string | null) => void
+
   // Methods for updating graph elements and UI state together
   updateNodeAndSelect: (nodeId: string, entityId: string, propertyName: string, newValue: string) => Promise<void>
   updateEdgeAndSelect: (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => Promise<void>
@@ -230,6 +234,10 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   // Version counter implementation
   graphDataVersion: 0,
   incrementGraphDataVersion: () => set((state) => ({ graphDataVersion: state.graphDataVersion + 1 })),
+
+  // Fusion edge filtering
+  fusionTagFilter: null,
+  setFusionTagFilter: (fusionTag: string | null) => set({ fusionTagFilter: fusionTag }),
 
   // Methods for updating graph elements and UI state together
   updateNodeAndSelect: async (nodeId: string, entityId: string, propertyName: string, newValue: string) => {

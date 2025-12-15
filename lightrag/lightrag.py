@@ -11,6 +11,9 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import partial
+import json
+import re
+import json_repair
 from typing import (
     Any,
     AsyncIterator,
@@ -48,6 +51,7 @@ from lightrag.constants import (
     DEFAULT_MAX_SOURCE_IDS_PER_ENTITY,
     DEFAULT_MAX_SOURCE_IDS_PER_RELATION,
     DEFAULT_ENTITY_TYPES,
+    DEFAULT_RELATION_TYPES,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
@@ -112,6 +116,7 @@ from lightrag.utils import (
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
+    use_llm_func_with_cache,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -424,9 +429,11 @@ class LightRAG:
                 "SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str
             ),
             "entity_types": get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list),
-            #"relation_types": get_env_value("RELATION_TYPES", DEFAULT_RELATION_TYPES, list),
+            "relation_types": get_env_value("RELATION_TYPES", DEFAULT_RELATION_TYPES, list),
         }
     )
+
+    graph_tag_addon_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Storages Management
     # ---
@@ -1236,7 +1243,7 @@ class LightRAG:
 
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
+                self._process_extract_entities(inserting_chunks, graph_tag="default"),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
@@ -1904,7 +1911,7 @@ class LightRAG:
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
                             entity_relation_task = asyncio.create_task(
                                 self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                                    chunks, pipeline_status, pipeline_status_lock, graph_tag=graph_tag
                                 )
                             )
                             chunk_results = await entity_relation_task
@@ -2181,12 +2188,14 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None, graph_tag: str | None = None,
     ) -> list:
         try:
+            global_config = asdict(self)
+            global_config["addon_params"] = self._resolve_addon_params(graph_tag)
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=global_config,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -4213,10 +4222,10 @@ class LightRAG:
         # SIMILAR：向量+LLM
         similar_edges: list[tuple[str, str]] = []
         for entity_id in canonical_map.keys():
-            embedding = await _get_embedding(entity_id)
+            embedding = await _get_embedding(entity_id) # 
             if embedding is None:
                 continue
-            neighbors = await self.entities_vdb.query(
+            neighbors = await self.entities_vdb.query( # nano embedding, 
                 query=entity_id, top_k=top_k, query_embedding=embedding
             )
             for neighbor in neighbors:
@@ -4251,7 +4260,7 @@ class LightRAG:
                         "relationship_type": "SAME_AS",
                         "fusion_tag": fusion_tag,
                         "created_at": int(time.time()),
-                    },
+                    }, # a,B  , A《 B， 新的关系，标识，
                 )
             for src, tgt in similar_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
@@ -4272,3 +4281,347 @@ class LightRAG:
             "same_edges": len(same_edges),
             "similar_edges": len(similar_edges),
         }
+    
+    def derive_schema_types(
+        self,
+        doc_ids: str | list[str] | None = None,
+        contents: str | list[str] | None = None,
+        sample_size: int = 5,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 12,
+        max_relation_types: int = 12,
+        update_addon_params: bool = True,
+        language: str | None = None,
+        graph_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Sync helper for :meth:`aderive_schema_types`."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.aderive_schema_types(
+                doc_ids=doc_ids,
+                contents=contents,
+                sample_size=sample_size,
+                max_sample_tokens=max_sample_tokens,
+                max_entity_types=max_entity_types,
+                max_relation_types=max_relation_types,
+                update_addon_params=update_addon_params,
+                language=language,
+                graph_tag=graph_tag,
+            )
+        )
+
+    async def aderive_schema_types(
+        self,
+        doc_ids: str | list[str] | None = None,
+        contents: str | list[str] | None = None,
+        sample_size: int = 5,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 20,
+        max_relation_types: int = 20,
+        update_addon_params: bool = True,
+        language: str | None = None,
+        graph_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """Infer domain-specific entity/relation labels from uploaded content.
+
+        This utility inspects the provided document contents, asks the configured
+        LLM to propose concise `entity_types` and `relation_types`, and optionally
+        updates ``self.addon_params`` so that subsequent extraction prompts use the
+        inferred schema instead of the generic defaults.
+
+        Args:
+            doc_ids: Optional single document ID or list of IDs already stored in
+                ``self.full_docs`` whose content should be sampled.
+            contents: Optional raw text (or list of texts) to analyse directly
+                without relying on stored documents.
+            sample_size: Maximum number of text samples to send to the LLM.
+            max_sample_tokens: Token budget for the concatenated sample text.
+            max_entity_types: Maximum number of entity type labels to request.
+            max_relation_types: Maximum number of relation type labels to request.
+            update_addon_params: If True, overwrite ``self.addon_params`` entries
+                when new labels are generated.
+            language: Optional language override for the LLM response.
+            graph_tag: Optional graph tag whose schema should be updated. When omitted,
+                the global default schema is updated.
+
+        Returns:
+            dict: {
+                "entity_types": [...],
+                "relation_types": [...],
+                "raw_payload": <original LLM JSON payload>,
+                "graph_tag": graph_tag or None,
+            }
+        """
+        if doc_ids is None and contents is None:
+            raise ValueError("Either doc_ids or contents must be provided.")
+        if self.llm_model_func is None:
+            raise RuntimeError("llm_model_func must be configured before calling this method.")
+
+        normalized_graph_tag = self._normalize_graph_tag(graph_tag)
+        doc_id_list: list[str] = []
+        if doc_ids is not None:
+            doc_id_list = [doc_ids] if isinstance(doc_ids, str) else [doc for doc in doc_ids if doc]
+        content_list: list[str] = []
+        if contents is not None:
+            content_list = (
+                [contents] if isinstance(contents, str) else [text for text in contents if text]
+            )
+
+        raw_contents: list[str] = []
+
+        for doc_id in doc_id_list:
+            doc_id = doc_id.strip()
+            if not doc_id:
+                continue
+            content_data = await self.full_docs.get_by_id(doc_id)
+            if content_data and content_data.get("content"):
+                raw_contents.append(content_data["content"])
+            else:
+                logger.warning("No stored content found for document id `%s`", doc_id)
+
+        raw_contents.extend(content_list)
+
+        normalized_samples = [
+            sanitize_text_for_encoding(text).strip() 
+            for text in raw_contents
+            if isinstance(text, str) and text.strip()
+        ]
+        if not normalized_samples:
+            raise ValueError("No valid content found for schema derivation.")
+
+        if sample_size > 0:
+            normalized_samples = normalized_samples[:sample_size]
+
+        combined_text = "\n\n---\n\n".join(normalized_samples)
+        schema_token_limit = max(512, max_sample_tokens)
+        truncated_text = combined_text
+        if self.tokenizer is not None:
+            try:
+                tokens = self.tokenizer.encode(combined_text)
+                if len(tokens) > schema_token_limit:
+                    truncated_text = self.tokenizer.decode(tokens[:schema_token_limit])
+            except Exception as exc:
+                logger.warning(
+                    "Tokenizer failed when preparing schema samples (falling back to chars): %s",
+                    exc,
+                )
+                truncated_text = combined_text[: schema_token_limit * 4]
+        else:
+            truncated_text = combined_text[: schema_token_limit * 4]
+
+        if not truncated_text.strip():
+            raise ValueError("Prepared schema sample text is empty after truncation.")
+
+        response_language = (
+            language
+            or self.addon_params.get("language")
+            or DEFAULT_SUMMARY_LANGUAGE
+        )
+
+        schema_context = {
+            "language": response_language,
+            "max_entity_types": max_entity_types,
+            "max_relation_types": max_relation_types,
+            "input_text": truncated_text,
+        }
+        system_prompt = PROMPTS["schema_inference_system_prompt"].format(**schema_context)
+        user_prompt = PROMPTS["schema_inference_user_prompt"].format(**schema_context)
+
+        response_text, _ = await use_llm_func_with_cache(
+            user_prompt,
+            self.llm_model_func,
+            system_prompt=system_prompt,
+            llm_response_cache=self.llm_response_cache,
+            cache_type="schema_inference",
+        )
+
+        payload = self._parse_schema_payload(response_text)
+
+        derived_entity_types = self._normalize_schema_list(
+            payload.get("entity_types"), max_entity_types
+        )
+        derived_relation_types = self._normalize_schema_list(
+            payload.get("relation_types"), max_relation_types
+        )
+
+        if update_addon_params and (
+            derived_entity_types or derived_relation_types or language or normalized_graph_tag
+        ):
+            self._update_graph_tag_schema(
+                normalized_graph_tag,
+                entity_types=derived_entity_types or None,
+                relation_types=derived_relation_types or None,
+                language=response_language,
+            )
+
+        resolved_schema = self._resolve_addon_params(normalized_graph_tag)
+        entity_types = derived_entity_types or resolved_schema["entity_types"]
+        relation_types = derived_relation_types or resolved_schema["relation_types"]
+        resolved_language = resolved_schema["language"]
+
+        logger.info(
+            f"contents: {truncated_text[:100]}, Derived entity_types: {entity_types}, relation_types: {relation_types}"
+        )
+
+        return {
+            "entity_types": entity_types,
+            "relation_types": relation_types,
+            "raw_payload": payload,
+            "graph_tag": normalized_graph_tag,
+            "language": resolved_language,
+        }
+
+    @staticmethod
+    def _parse_schema_payload(raw_text: str) -> dict[str, Any]:
+        """Extract JSON payload from an LLM response."""
+        if not raw_text:
+            return {}
+
+        cleaned = raw_text.strip()
+        if "```" in cleaned:
+            for block in cleaned.split("```"):
+                block = block.strip()
+                if block.startswith("{") and block.endswith("}"):
+                    cleaned = block
+                    break
+
+        if "{" in cleaned and "}" in cleaned:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}") + 1
+            cleaned = cleaned[start:end]
+
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            try:
+                repaired = json_repair.repair(cleaned)
+                parsed = json.loads(repaired)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception as exc:
+                logger.warning("Unable to repair schema payload JSON: %s", exc)
+
+        logger.warning("Failed to parse schema inference output, returning empty payload.")
+        return {}
+
+    @staticmethod
+    def _normalize_schema_list(data: Any, limit: int) -> list[str]:
+        """Normalize schema suggestions into a deduplicated, ordered list."""
+        if not data:
+            return []
+
+        limit = max(1, limit)
+        seen: set[str] = set()
+        result: list[str] = []
+
+        def _add_candidate(value: str) -> bool:
+            candidate = value.strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                result.append(candidate)
+            return len(result) >= limit
+
+        if isinstance(data, dict):
+            if {"name", "type", "label"} & set(data.keys()):
+                name = data.get("name") or data.get("type") or data.get("label") or data.get("value")
+                if isinstance(name, str):
+                    _add_candidate(name)
+                return result
+
+            for key in ("items", "values", "types", "labels"):
+                if key in data:
+                    return LightRAG._normalize_schema_list(data[key], limit)
+
+        if isinstance(data, (list, tuple, set)):
+            for item in data:
+                if isinstance(item, str):
+                    if _add_candidate(item):
+                        break
+                elif isinstance(item, dict):
+                    name = item.get("name") or item.get("type") or item.get("label") or item.get("value")
+                    if isinstance(name, str) and _add_candidate(name):
+                        break
+            return result
+
+        if isinstance(data, str):
+            parts = [part.strip() for part in re.split(r"[,;\n]+", data) if part.strip()]
+            for part in parts:
+                if _add_candidate(part):
+                    break
+            return result
+
+        return result
+
+    @staticmethod
+    def _normalize_graph_tag(graph_tag: str | None) -> str | None:
+        if graph_tag is None:
+            return None
+        normalized = graph_tag.strip()
+        return normalized or None
+
+    def _update_graph_tag_schema(
+        self,
+        graph_tag: str | None,
+        entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
+        language: str | None = None,
+    ) -> None:
+        normalized = self._normalize_graph_tag(graph_tag)
+        target: dict[str, Any]
+        if normalized:
+            target = self.graph_tag_addon_params.setdefault(normalized, {})
+        else:
+            target = self.addon_params
+
+        if entity_types:
+            target["entity_types"] = list(dict.fromkeys(entity_types))
+        if relation_types:
+            target["relation_types"] = list(dict.fromkeys(relation_types))
+        if language:
+            target["language"] = language
+
+    def _resolve_addon_params(self, graph_tag: str | None = None) -> dict[str, Any]:
+        resolved = {
+            "language": self.addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE),
+            "entity_types": list(
+                self.addon_params.get("entity_types", DEFAULT_ENTITY_TYPES)
+            ),
+            "relation_types": list(
+                self.addon_params.get("relation_types", DEFAULT_RELATION_TYPES)
+            ),
+        }
+
+        normalized = self._normalize_graph_tag(graph_tag)
+        if normalized:
+            tag_params = self.graph_tag_addon_params.get(normalized)
+            if tag_params:
+                language = tag_params.get("language")
+                if language:
+                    resolved["language"] = language
+                if tag_params.get("entity_types"):
+                    resolved["entity_types"] = list(tag_params["entity_types"])
+                if tag_params.get("relation_types"):
+                    resolved["relation_types"] = list(tag_params["relation_types"])
+
+        return resolved
+
+    def get_schema_for_graph_tag(self, graph_tag: str | None = None) -> dict[str, Any]:
+        """Return the resolved addon parameters for the specified graph_tag."""
+        return self._resolve_addon_params(graph_tag)
+
+    def set_schema_for_graph_tag(
+        self,
+        graph_tag: str,
+        entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
+        language: str | None = None,
+    ) -> None:
+        """Manually configure addon parameters for a graph_tag."""
+        self._update_graph_tag_schema(
+            graph_tag,
+            entity_types=entity_types,
+            relation_types=relation_types,
+            language=language,
+        )

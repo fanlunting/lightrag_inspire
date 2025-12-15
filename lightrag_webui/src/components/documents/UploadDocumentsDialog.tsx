@@ -9,6 +9,7 @@ import {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/Dialog'
+import Input from '@/components/ui/Input'
 import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
@@ -27,6 +28,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [graphTag, setGraphTag] = useState<string>('default')
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -101,7 +103,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
                 ...pre,
                 [file.name]: percentCompleted
               }))
-            })
+            }, graphTag)
 
             if (result.status === 'duplicated') {
               uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
@@ -175,7 +177,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, graphTag]
   )
 
   return (
@@ -204,6 +206,18 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
+        <div className="mb-3">
+          <label className="mb-1 block text-sm text-muted-foreground" htmlFor="graph-tag-input">
+            Graph Tag
+          </label>
+          <Input
+            id="graph-tag-input"
+            value={graphTag}
+            onChange={(e) => setGraphTag(e.target.value)}
+            placeholder="default"
+            disabled={isUploading}
+          />
+        </div>
         <FileUploader
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}

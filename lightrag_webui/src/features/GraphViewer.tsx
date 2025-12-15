@@ -20,6 +20,7 @@ import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
+import GraphFusionControl from '@/components/graph/GraphFusionControl'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -221,6 +222,7 @@ const GraphViewer = () => {
           <ZoomControl />
           <FullScreenControl />
           <LegendButton />
+          <GraphFusionControl />
           <Settings />
           {/* <ThemeToggle /> */}
         </div>
