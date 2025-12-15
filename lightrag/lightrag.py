@@ -1818,6 +1818,18 @@ class LightRAG:
                                 )
                             content = content_data["content"]
 
+                            # One-time schema inference per graph_tag (best-effort).
+                            # This ensures extraction uses a derived schema when available.
+                            await self._maybe_aderive_schema_types_for_graph_tag(
+                                graph_tag,
+                                content,
+                                max_sample_tokens=4096,
+                                max_entity_types=20,
+                                max_relation_types=20,
+                                pipeline_status=pipeline_status,
+                                pipeline_status_lock=pipeline_status_lock,
+                            )
+
                             # Call chunking function, supporting both sync and async implementations
                             chunking_result = self.chunking_func(
                                 self.tokenizer,
@@ -4470,6 +4482,90 @@ class LightRAG:
             "graph_tag": normalized_graph_tag,
             "language": resolved_language,
         }
+
+    async def _maybe_aderive_schema_types_for_graph_tag(
+        self,
+        graph_tag: str | None,
+        content: str,
+        *,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 20,
+        max_relation_types: int = 20,
+        pipeline_status: dict | None = None,
+        pipeline_status_lock: asyncio.Lock | None = None,
+    ) -> None:
+        """
+        Best-effort, one-time schema inference per graph_tag.
+
+        Called from the document processing pipeline before entity/relation
+        extraction. Guarded to avoid repeated calls and uses per-tag async locks
+        to prevent concurrent inference duplication.
+        """
+        normalized = self._normalize_graph_tag(graph_tag)
+        if not normalized:
+            return
+        if not isinstance(content, str) or not content.strip():
+            return
+
+        # If schema already exists (manual or inferred), do nothing.
+        tag_params = self.graph_tag_addon_params.get(normalized) or {}
+        if tag_params.get("entity_types") and tag_params.get("relation_types"):
+            return
+
+        # Avoid repeated attempts when inference fails or returns empty.
+        if tag_params.get("_schema_inference_attempted"):
+            return
+
+        # Lazily create lock map (dynamic attribute; do NOT add as dataclass field).
+        if not hasattr(self, "_schema_inference_locks"):
+            setattr(self, "_schema_inference_locks", {})
+        locks: dict[str, asyncio.Lock] = getattr(self, "_schema_inference_locks")
+        lock = locks.setdefault(normalized, asyncio.Lock())
+
+        async with lock:
+            # Re-check after acquiring lock.
+            tag_params = self.graph_tag_addon_params.get(normalized) or {}
+            if tag_params.get("entity_types") and tag_params.get("relation_types"):
+                return
+            if tag_params.get("_schema_inference_attempted"):
+                return
+
+            # Mark attempted before calling LLM to prevent thundering herd.
+            self.graph_tag_addon_params.setdefault(normalized, {})[
+                "_schema_inference_attempted"
+            ] = True
+            self.graph_tag_addon_params[normalized]["_schema_inference_attempted_at"] = int(
+                time.time()
+            )
+
+            try:
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["history_messages"].append(
+                            f"Inferring schema for graph_tag `{normalized}`"
+                        )
+
+                await self.aderive_schema_types(
+                    contents=content,
+                    sample_size=1,
+                    max_sample_tokens=max_sample_tokens,
+                    max_entity_types=max_entity_types,
+                    max_relation_types=max_relation_types,
+                    update_addon_params=True,
+                    graph_tag=normalized,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Schema inference failed for graph_tag `%s` (continuing with defaults): %s",
+                    normalized,
+                    exc,
+                )
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["history_messages"].append(
+                            f"Schema inference failed for graph_tag `{normalized}`; using defaults"
+                        )
+                return
 
     @staticmethod
     def _parse_schema_payload(raw_text: str) -> dict[str, Any]:
