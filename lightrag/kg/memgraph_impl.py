@@ -669,7 +669,7 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """Delete a node with the specified label
 
         Args:
@@ -700,7 +700,7 @@ class MemgraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node deletion: {str(e)}")
             raise
 
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Args:
@@ -713,7 +713,9 @@ class MemgraphStorage(BaseGraphStorage):
         for node in nodes:
             await self.delete_node(node)
 
-    async def remove_edges(self, edges: list[tuple[str, str]]):
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ):
         """Delete multiple edges
 
         Args:

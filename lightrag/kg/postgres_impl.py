@@ -3710,7 +3710,7 @@ class PGGraphStorage(BaseGraphStorage):
             )
             raise
 
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """
         Delete a node from the graph.
 
@@ -3730,7 +3730,9 @@ class PGGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node deletion: {e}")
             raise
 
-    async def remove_nodes(self, node_ids: list[str]) -> None:
+    async def remove_nodes(
+        self, node_ids: list[str], graph_tag: str = "default"
+    ) -> None:
         """
         Remove multiple nodes from the graph.
 
@@ -3752,7 +3754,9 @@ class PGGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node removal: {e}")
             raise
 
-    async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ) -> None:
         """
         Remove multiple edges from the graph.
 

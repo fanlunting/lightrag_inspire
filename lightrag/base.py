@@ -576,7 +576,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """Delete a node from the graph.
 
         Importance notes for in-memory storage:
@@ -586,10 +586,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Args:
             node_id: The ID of the node to delete
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
         """
 
     @abstractmethod
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Importance notes:
@@ -599,10 +600,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Args:
             nodes: List of node IDs to be deleted
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
         """
 
     @abstractmethod
-    async def remove_edges(self, edges: list[tuple[str, str]]):
+    async def remove_edges(self, edges: list[tuple[str, str]], graph_tag: str = "default"):
         """Delete multiple edges
 
         Importance notes:
@@ -612,6 +614,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
         """
 
     # TODO: deprecated

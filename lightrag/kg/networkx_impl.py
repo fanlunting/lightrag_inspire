@@ -155,7 +155,7 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """
         Importance notes:
         1. Changes will be persisted to disk during the next index_done_callback
@@ -171,7 +171,7 @@ class NetworkXStorage(BaseGraphStorage):
                 f"[{self.workspace}] Node {node_id} not found in the graph for deletion"
             )
 
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Importance notes:
@@ -187,7 +187,9 @@ class NetworkXStorage(BaseGraphStorage):
             if graph.has_node(node):
                 graph.remove_node(node)
 
-    async def remove_edges(self, edges: list[tuple[str, str]]):
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ):
         """Delete multiple edges
 
         Importance notes:

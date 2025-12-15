@@ -1544,14 +1544,15 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Args:
             nodes: List of node labels to be deleted
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
         """
         for node in nodes:
-            await self.delete_node(node)
+            await self.delete_node(node, graph_tag=graph_tag)
 
     @retry(
         stop=stop_after_attempt(3),

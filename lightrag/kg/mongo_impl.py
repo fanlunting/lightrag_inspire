@@ -1100,7 +1100,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """
         1) Remove node's doc entirely.
         2) Remove inbound & outbound edges from any doc that references node_id.
@@ -1538,7 +1538,7 @@ class MongoGraphStorage(BaseGraphStorage):
         # Mongo handles persistence automatically
         pass
 
-    async def remove_nodes(self, nodes: list[str]) -> None:
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default") -> None:
         """Delete multiple nodes
 
         Args:
@@ -1563,7 +1563,9 @@ class MongoGraphStorage(BaseGraphStorage):
 
         logger.debug(f"[{self.workspace}] Successfully deleted nodes: {nodes}")
 
-    async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ) -> None:
         """Delete multiple edges
 
         Args:

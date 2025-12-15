@@ -59,6 +59,7 @@ async def adelete_by_entity(
     entities_vdb,
     relationships_vdb,
     entity_name: str,
+    graph_tag: str = "default",
     entity_chunks_storage=None,
     relation_chunks_storage=None,
 ) -> DeletionResult:
@@ -82,7 +83,9 @@ async def adelete_by_entity(
     ):
         try:
             # Check if the entity exists
-            if not await chunk_entity_relation_graph.has_node(entity_name):
+            if not await chunk_entity_relation_graph.has_node(
+                entity_name, graph_tag=graph_tag
+            ):
                 logger.warning(f"Entity '{entity_name}' not found.")
                 return DeletionResult(
                     status="not_found",
@@ -91,7 +94,9 @@ async def adelete_by_entity(
                     status_code=404,
                 )
             # Retrieve related relationships before deleting the node
-            edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
+            edges = await chunk_entity_relation_graph.get_node_edges(
+                entity_name, graph_tag=graph_tag
+            )
             related_relations_count = len(edges) if edges else 0
 
             # Clean up chunk tracking storages before deletion
@@ -123,7 +128,7 @@ async def adelete_by_entity(
 
             await entities_vdb.delete_entity(entity_name)
             await relationships_vdb.delete_entity_relation(entity_name)
-            await chunk_entity_relation_graph.delete_node(entity_name)
+            await chunk_entity_relation_graph.delete_node(entity_name, graph_tag=graph_tag)
 
             message = f"Entity Delete: remove '{entity_name}' and its {related_relations_count} relations"
             logger.info(message)
@@ -156,6 +161,7 @@ async def adelete_by_relation(
     relationships_vdb,
     source_entity: str,
     target_entity: str,
+    graph_tag: str = "default",
     relation_chunks_storage=None,
 ) -> DeletionResult:
     """Asynchronously delete a relation between two entities.
@@ -184,7 +190,7 @@ async def adelete_by_relation(
         try:
             # Check if the relation exists
             edge_exists = await chunk_entity_relation_graph.has_edge(
-                source_entity, target_entity
+                source_entity, target_entity, graph_tag=graph_tag
             )
             if not edge_exists:
                 message = f"Relation from '{source_entity}' to '{target_entity}' does not exist"
@@ -219,7 +225,7 @@ async def adelete_by_relation(
 
             # Delete relation from knowledge graph
             await chunk_entity_relation_graph.remove_edges(
-                [(source_entity, target_entity)]
+                [(source_entity, target_entity)], graph_tag=graph_tag
             )
 
             message = f"Relation Delete: `{source_entity}`~`{target_entity}` deleted successfully"
