@@ -382,35 +382,42 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         """Check if an edge exists between two nodes.
 
         Args:
             source_node_id: The ID of the source node
             target_node_id: The ID of the target node
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
 
         Returns:
             True if the edge exists, False otherwise
         """
 
     @abstractmethod
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         """Get the degree (number of connected edges) of a node.
 
         Args:
             node_id: The ID of the node
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
 
         Returns:
             The number of edges connected to the node
         """
 
     @abstractmethod
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(
+        self, src_id: str, tgt_id: str, graph_tag: str = "default"
+    ) -> int:
         """Get the total degree of an edge (sum of degrees of its source and target nodes).
 
         Args:
             src_id: The ID of the source node
             tgt_id: The ID of the target node
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
 
         Returns:
             The sum of the degrees of the source and target nodes
@@ -430,31 +437,37 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes.
 
         Args:
             source_node_id: The ID of the source node
             target_node_id: The ID of the target node
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
 
         Returns:
             A dictionary of edge properties if found, None otherwise
         """
 
     @abstractmethod
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         """Get all edges connected to a node.
 
         Args:
             source_node_id: The ID of the node to get edges for
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
 
         Returns:
             A list of (source_id, target_id) tuples representing edges,
             or None if the node doesn't exist
         """
 
-    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+    async def get_nodes_batch(
+        self, node_ids: list[str], graph_tag: str = "default"
+    ) -> dict[str, dict]:
         """Get nodes as a batch using UNWIND
 
         Default implementation fetches nodes one by one.
@@ -463,12 +476,14 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
         result = {}
         for node_id in node_ids:
-            node = await self.get_node(node_id)
+            node = await self.get_node(node_id, graph_tag=graph_tag)
             if node is not None:
                 result[node_id] = node
         return result
 
-    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+    async def node_degrees_batch(
+        self, node_ids: list[str], graph_tag: str = "default"
+    ) -> dict[str, int]:
         """Node degrees as a batch using UNWIND
 
         Default implementation fetches node degrees one by one.
@@ -477,12 +492,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
         result = {}
         for node_id in node_ids:
-            degree = await self.node_degree(node_id)
+            degree = await self.node_degree(node_id, graph_tag=graph_tag)
             result[node_id] = degree
         return result
 
     async def edge_degrees_batch(
-        self, edge_pairs: list[tuple[str, str]]
+        self, edge_pairs: list[tuple[str, str]], graph_tag: str = "default"
     ) -> dict[tuple[str, str], int]:
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
@@ -492,12 +507,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
         result = {}
         for src_id, tgt_id in edge_pairs:
-            degree = await self.edge_degree(src_id, tgt_id)
+            degree = await self.edge_degree(src_id, tgt_id, graph_tag=graph_tag)
             result[(src_id, tgt_id)] = degree
         return result
 
     async def get_edges_batch(
-        self, pairs: list[dict[str, str]]
+        self, pairs: list[dict[str, str]], graph_tag: str = "default"
     ) -> dict[tuple[str, str], dict]:
         """Get edges as a batch using UNWIND
 
@@ -509,13 +524,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         for pair in pairs:
             src_id = pair["src"]
             tgt_id = pair["tgt"]
-            edge = await self.get_edge(src_id, tgt_id)
+            edge = await self.get_edge(src_id, tgt_id, graph_tag=graph_tag)
             if edge is not None:
                 result[(src_id, tgt_id)] = edge
         return result
 
     async def get_nodes_edges_batch(
-        self, node_ids: list[str]
+        self, node_ids: list[str], graph_tag: str = "default"
     ) -> dict[str, list[tuple[str, str]]]:
         """Get nodes edges as a batch using UNWIND
 
@@ -525,7 +540,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
         result = {}
         for node_id in node_ids:
-            edges = await self.get_node_edges(node_id)
+            edges = await self.get_node_edges(node_id, graph_tag=graph_tag)
             result[node_id] = edges if edges is not None else []
         return result
 

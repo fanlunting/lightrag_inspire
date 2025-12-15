@@ -3527,7 +3527,9 @@ class PGGraphStorage(BaseGraphStorage):
         row = (await self._query(query, params=params))[0]
         return bool(row["node_exists"])
 
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         query = f"""
             WITH a AS (
               SELECT id AS vid
@@ -3573,18 +3575,18 @@ class PGGraphStorage(BaseGraphStorage):
             return result[node_id]
         return None
 
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         result = await self.node_degrees_batch(node_ids=[node_id])
         if result and node_id in result:
             return result[node_id]
 
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(self, src_id: str, tgt_id: str, graph_tag: str = "default") -> int:
         result = await self.edge_degrees_batch(edges=[(src_id, tgt_id)])
         if result and (src_id, tgt_id) in result:
             return result[(src_id, tgt_id)]
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes"""
         result = await self.get_edges_batch(
@@ -3594,7 +3596,9 @@ class PGGraphStorage(BaseGraphStorage):
             return result[(source_node_id, target_node_id)]
         return None
 
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
         :return: list of dictionaries containing edge information

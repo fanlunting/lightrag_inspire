@@ -2243,8 +2243,8 @@ async def _merge_edges_then_upsert(
     logger.info(f"_merge_edges_then_upsert: edge_data: {edges_data}")
 
     # 1. Get existing edge data from graph storage
-    if await knowledge_graph_inst.has_edge(src_id, tgt_id):
-        already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
+    if await knowledge_graph_inst.has_edge(src_id, tgt_id, graph_tag=graph_tag):
+        already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id, graph_tag=graph_tag)
         # Handle the case where get_edge returns None or missing fields
         if already_edge:
             # Get weight with default 1.0 if missing
@@ -2703,6 +2703,7 @@ async def _merge_edges_then_upsert(
             created_at=edge_created_at,
             truncate=truncation_info,
             relationship_type=relationship_type,
+            graph_tag=graph_tag,
         ),
     )
 

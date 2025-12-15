@@ -97,7 +97,9 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         return graph.has_node(node_id)
 
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         graph = await self._get_graph()
         return graph.has_edge(source_node_id, target_node_id)
 
@@ -105,23 +107,27 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         return graph.nodes.get(node_id)
 
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         graph = await self._get_graph()
         return graph.degree(node_id)
 
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(
+        self, src_id: str, tgt_id: str, graph_tag: str = "default"
+    ) -> int:
         graph = await self._get_graph()
         src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
         tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
         return src_degree + tgt_degree
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         graph = await self._get_graph()
         return graph.edges.get((source_node_id, target_node_id))
 
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         graph = await self._get_graph()
         if graph.has_node(source_node_id):
             return list(graph.edges(source_node_id))

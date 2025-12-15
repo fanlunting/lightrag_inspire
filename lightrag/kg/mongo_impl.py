@@ -851,7 +851,9 @@ class MongoGraphStorage(BaseGraphStorage):
         doc = await self.collection.find_one({"_id": node_id}, {"_id": 1})
         return doc is not None
 
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         """
         Check if there's a direct single-hop edge between source_node_id and target_node_id.
         """
@@ -878,7 +880,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         """
         Returns the total number of edges connected to node_id (both inbound and outbound).
         """
@@ -886,7 +888,7 @@ class MongoGraphStorage(BaseGraphStorage):
             {"$or": [{"source_node_id": node_id}, {"target_node_id": node_id}]}
         )
 
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(self, src_id: str, tgt_id: str, graph_tag: str = "default") -> int:
         """Get the total degree (sum of relationships) of two nodes.
 
         Args:
@@ -896,8 +898,8 @@ class MongoGraphStorage(BaseGraphStorage):
         Returns:
             int: Sum of the degrees of both nodes
         """
-        src_degree = await self.node_degree(src_id)
-        trg_degree = await self.node_degree(tgt_id)
+        src_degree = await self.node_degree(src_id, graph_tag=graph_tag)
+        trg_degree = await self.node_degree(tgt_id, graph_tag=graph_tag)
 
         return src_degree + trg_degree
 
@@ -914,7 +916,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return await self.collection.find_one({"_id": node_id})
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         return await self.edge_collection.find_one(
             {
@@ -931,7 +933,9 @@ class MongoGraphStorage(BaseGraphStorage):
             }
         )
 
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
 
