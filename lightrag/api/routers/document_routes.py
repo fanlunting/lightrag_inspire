@@ -19,6 +19,7 @@ from fastapi import (
     File,
     HTTPException,
     UploadFile,
+    Form,
 )
 from pydantic import BaseModel, Field, field_validator
 
@@ -1037,7 +1038,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, graph_tag: str = "default"
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1406,7 +1407,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    graph_tag=graph_tag or "default",
                 )
 
                 logger.info(
@@ -1490,7 +1494,9 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, graph_tag: str = "default"
+):
     """Index a file with track_id
 
     Args:
@@ -1500,7 +1506,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, graph_tag
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1911,7 +1917,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        graph_tag: str = Form("default"),
     ):
         """
         Upload a file to the input directory and index it.
@@ -1967,7 +1975,9 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, graph_tag
+            )
 
             return InsertResponse(
                 status="success",
