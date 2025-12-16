@@ -4196,31 +4196,45 @@ class LightRAG:
             raise ValueError(f"No nodes found for tags {normalized_tags}")
 
         canonical_map: dict[str, list[dict[str, Any]]] = {}
+        # Representative node per entity_id (used for SIMILAR prompt context + disambiguated edge endpoints)
         node_lookup: dict[str, dict[str, Any]] = {}
         for node in target_nodes:
             entity_id = node.get("entity_id") or node.get("id")
             if not entity_id:
                 continue
-            canonical_map.setdefault(entity_id, []).append(dict(node))
-            node_lookup[entity_id] = dict(node)
+            node_copy = dict(node)
+            canonical_map.setdefault(entity_id, []).append(node_copy)
 
-        # SAME_AS：同 entity_id 的原节点之间
-        same_edges: list[tuple[str, str]] = []
-        for members in canonical_map.values():
+        # Pick a stable representative per entity_id (prefer newest created_at if present).
+        for entity_id, variants in canonical_map.items():
+            def _created_at(n: dict[str, Any]) -> int:
+                try:
+                    return int(n.get("created_at") or 0)
+                except Exception:
+                    return 0
+
+            node_lookup[entity_id] = sorted(variants, key=_created_at, reverse=True)[0]
+
+        # SAME_AS：同 entity_id，但不同 graph_tag 的原节点之间（Scheme B）。
+        # For Neo4j Scheme B, edges must be disambiguated by (entity_id, graph_tag) pairs.
+        same_edges: list[tuple[str, str, str]] = []  # (entity_id, src_graph_tag, tgt_graph_tag)
+        for entity_id, members in canonical_map.items():
+            if len(members) < 2:
+                continue
             for i in range(len(members)):
                 for j in range(i + 1, len(members)):
-                    src = members[i]["entity_id"]
-                    tgt = members[j]["entity_id"]
-                    if src and tgt and src != tgt:
-                        same_edges.append((src, tgt))
+                    src_tag = (members[i].get("graph_tag") or "default")
+                    tgt_tag = (members[j].get("graph_tag") or "default")
+                    if src_tag and tgt_tag and src_tag != tgt_tag:
+                        same_edges.append((entity_id, src_tag, tgt_tag))
 
         async def _get_embedding(entity_name: str):
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             record = await self.entities_vdb.get_by_id(entity_vdb_id)
             return record.get("embedding") if record else None
 
-        # SIMILAR：向量+LLM
-        similar_edges: list[tuple[str, str]] = []
+        # SIMILAR：向量+LLM（也用 graph_tag 做端点消歧，避免 Neo4j 多节点笛卡尔积）
+        similar_edges: list[tuple[str, str, str, str]] = []  # (src_id, src_tag, tgt_id, tgt_tag)
         for entity_id in canonical_map.keys():
             embedding = await _get_embedding(entity_id) # 
             if embedding is None:
@@ -4249,27 +4263,33 @@ class LightRAG:
                     is_similar = "YES" in answer.upper()
 
                 if is_similar:
-                    similar_edges.append((entity_id, other_id))
+                    src_tag = (node_lookup[entity_id].get("graph_tag") or "default")
+                    tgt_tag = (node_lookup[other_id].get("graph_tag") or "default")
+                    similar_edges.append((entity_id, src_tag, other_id, tgt_tag))
         
         async with graph_db_lock:
-            for src, tgt in same_edges:
+            for entity_id, src_tag, tgt_tag in same_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
-                    src,
-                    tgt,
+                    entity_id,
+                    entity_id,
                     {
                         "relationship_type": "SAME_AS",
                         "fusion_tag": fusion_tag,
                         "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
                     }, # a,B  , A《 B， 新的关系，标识，
                 )
-            for src, tgt in similar_edges:
+            for src_id, src_tag, tgt_id, tgt_tag in similar_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
-                    src,
-                    tgt,
+                    src_id,
+                    tgt_id,
                     {
                         "relationship_type": "SIMILAR",
                         "fusion_tag": fusion_tag,
                         "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
                     },
                 )
             await self.chunk_entity_relation_graph.index_done_callback()

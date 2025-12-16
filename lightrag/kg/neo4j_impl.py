@@ -969,16 +969,23 @@ class Neo4JStorage(BaseGraphStorage):
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
 
+        # Scheme B: allow multiple nodes with same entity_id across different graph_tag.
+        # We treat (entity_id, graph_tag) as the unique key in Neo4j.
+        graph_tag = properties.get("graph_tag") or "default"
+
         try:
             async with self._driver.session(database=self._DATABASE) as session:
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = f"""
-                    MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
+                    MERGE (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}})
                     SET n += $properties
                     SET n:`{entity_type}`
                     """
                     result = await tx.run(
-                        query, entity_id=node_id, properties=properties
+                        query,
+                        entity_id=node_id,
+                        graph_tag=graph_tag,
+                        properties=properties,
                     )
                     await result.consume()  # Ensure result is fully consumed
 
@@ -1028,20 +1035,42 @@ class Neo4JStorage(BaseGraphStorage):
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     workspace_label = self._get_workspace_label()
-                    query = f"""
-                    MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
-                    WITH source
-                    MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
-                    MERGE (source)-[r:`{relation_type}`]-(target)
-                    SET r += $properties
-                    RETURN r, source, target
-                    """
-                    result = await tx.run(
-                        query,
-                        source_entity_id=source_node_id,
-                        target_entity_id=target_node_id,
-                        properties=edge_properties
-                    )
+                    # Disambiguate duplicated entity_id nodes by graph_tag when provided.
+                    # This is required for Scheme B (multiple nodes per entity_id across graph_tag).
+                    source_graph_tag = edge_properties.get("source_graph_tag")
+                    target_graph_tag = edge_properties.get("target_graph_tag")
+                    if source_graph_tag and target_graph_tag:
+                        query = f"""
+                        MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $source_graph_tag}})
+                        WITH source
+                        MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $target_graph_tag}})
+                        MERGE (source)-[r:`{relation_type}`]-(target)
+                        SET r += $properties
+                        RETURN r, source, target
+                        """
+                        result = await tx.run(
+                            query,
+                            source_entity_id=source_node_id,
+                            target_entity_id=target_node_id,
+                            source_graph_tag=source_graph_tag,
+                            target_graph_tag=target_graph_tag,
+                            properties=edge_properties,
+                        )
+                    else:
+                        query = f"""
+                        MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
+                        WITH source
+                        MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
+                        MERGE (source)-[r:`{relation_type}`]-(target)
+                        SET r += $properties
+                        RETURN r, source, target
+                        """
+                        result = await tx.run(
+                            query,
+                            source_entity_id=source_node_id,
+                            target_entity_id=target_node_id,
+                            properties=edge_properties,
+                        )
                     try:
                         await result.fetch(2)
                     finally:
