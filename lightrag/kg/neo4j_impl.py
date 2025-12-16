@@ -1068,6 +1068,7 @@ class Neo4JStorage(BaseGraphStorage):
                         graph_tag=graph_tag,
                         properties=edge_properties
                     )
+                    
                     try:
                         await result.fetch(2)
                     finally:
