@@ -412,7 +412,9 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()  # Ensure results are consumed even on error
                 raise
 
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         """
         Check if an edge exists between two nodes
 
@@ -433,14 +435,17 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             result = None
             try:
+                # Filter by graph_tag for graph isolation.
                 query = (
-                    f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id}}) "
+                    f"MATCH (a:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})"
+                    f"-[r]-(b:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}}) "
                     "RETURN COUNT(r) > 0 AS edgeExists"
                 )
                 result = await session.run(
                     query,
                     source_entity_id=source_node_id,
                     target_entity_id=target_node_id,
+                    graph_tag=graph_tag,
                 )
                 single_result = await result.single()
                 await result.consume()  # Ensure result is fully consumed
@@ -508,7 +513,9 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+    async def get_nodes_batch(
+        self, node_ids: list[str], graph_tag: str = "default"
+    ) -> dict[str, dict]:
         """
         Retrieve multiple nodes in one query using UNWIND.
 
@@ -524,10 +531,10 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             UNWIND $node_ids AS id
-            MATCH (n:`{workspace_label}` {{entity_id: id}})
+            MATCH (n:`{workspace_label}` {{entity_id: id, graph_tag: $graph_tag}})
             RETURN n.entity_id AS entity_id, n
             """
-            result = await session.run(query, node_ids=node_ids)
+            result = await session.run(query, node_ids=node_ids, graph_tag=graph_tag)
             nodes = {}
             async for record in result:
                 entity_id = record["entity_id"]
@@ -544,7 +551,7 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()  # Make sure to consume the result fully
             return nodes
 
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         """Get the degree (number of relationships) of a node with the given label.
         If multiple nodes have the same label, returns the degree of the first node.
         If no node is found, returns 0.
@@ -565,11 +572,11 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             try:
                 query = f"""
-                    MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
+                    MATCH (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}})
                     OPTIONAL MATCH (n)-[r]-()
                     RETURN COUNT(r) AS degree
                 """
-                result = await session.run(query, entity_id=node_id)
+                result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
                 try:
                     record = await result.single()
 
@@ -592,7 +599,9 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+    async def node_degrees_batch(
+        self, node_ids: list[str], graph_tag: str = "default"
+    ) -> dict[str, int]:
         """
         Retrieve the degree for multiple nodes in a single query using UNWIND.
 
@@ -609,10 +618,10 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
                 UNWIND $node_ids AS id
-                MATCH (n:`{workspace_label}` {{entity_id: id}})
+                MATCH (n:`{workspace_label}` {{entity_id: id, graph_tag: $graph_tag}})
                 RETURN n.entity_id AS entity_id, count {{ (n)--() }} AS degree;
             """
-            result = await session.run(query, node_ids=node_ids)
+            result = await session.run(query, node_ids=node_ids, graph_tag=graph_tag)
             degrees = {}
             async for record in result:
                 entity_id = record["entity_id"]
@@ -630,7 +639,7 @@ class Neo4JStorage(BaseGraphStorage):
             # logger.debug(f"[{self.workspace}] Neo4j batch node degree query returned: {degrees}")
             return degrees
 
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(self, src_id: str, tgt_id: str, graph_tag: str = "default") -> int:
         """Get the total degree (sum of relationships) of two nodes.
 
         Args:
@@ -640,8 +649,8 @@ class Neo4JStorage(BaseGraphStorage):
         Returns:
             int: Sum of the degrees of both nodes
         """
-        src_degree = await self.node_degree(src_id)
-        trg_degree = await self.node_degree(tgt_id)
+        src_degree = await self.node_degree(src_id, graph_tag=graph_tag)
+        trg_degree = await self.node_degree(tgt_id, graph_tag=graph_tag)
 
         # Convert None to 0 for addition
         src_degree = 0 if src_degree is None else src_degree
@@ -651,7 +660,7 @@ class Neo4JStorage(BaseGraphStorage):
         return degrees
 
     async def edge_degrees_batch(
-        self, edge_pairs: list[tuple[str, str]]
+        self, edge_pairs: list[tuple[str, str]], graph_tag: str = "default"
     ) -> dict[tuple[str, str], int]:
         """
         Calculate the combined degree for each edge (sum of the source and target node degrees)
@@ -668,7 +677,7 @@ class Neo4JStorage(BaseGraphStorage):
         unique_node_ids.update({tgt for _, tgt in edge_pairs})
 
         # Get degrees for all nodes in one go.
-        degrees = await self.node_degrees_batch(list(unique_node_ids))
+        degrees = await self.node_degrees_batch(list(unique_node_ids), graph_tag=graph_tag)
 
         # Sum up degrees for each edge pair.
         edge_degrees = {}
@@ -677,7 +686,7 @@ class Neo4JStorage(BaseGraphStorage):
         return edge_degrees
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes.
 
@@ -698,13 +707,15 @@ class Neo4JStorage(BaseGraphStorage):
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
                 query = f"""
-                MATCH (start:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(end:`{workspace_label}` {{entity_id: $target_entity_id}})
+                MATCH (start:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})-[r]-
+                      (end:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}})
                 RETURN properties(r) as edge_properties
                 """
                 result = await session.run(
                     query,
                     source_entity_id=source_node_id,
                     target_entity_id=target_node_id,
+                    graph_tag=graph_tag,
                 )
                 try:
                     records = await result.fetch(2)
@@ -764,7 +775,7 @@ class Neo4JStorage(BaseGraphStorage):
             raise
 
     async def get_edges_batch(
-        self, pairs: list[dict[str, str]]
+        self, pairs: list[dict[str, str]], graph_tag: str = "default"
     ) -> dict[tuple[str, str], dict]:
         """
         Retrieve edge properties for multiple (src, tgt) pairs in one query.
@@ -781,10 +792,12 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             UNWIND $pairs AS pair
-            MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r:DIRECTED]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
+            MATCH (start:`{workspace_label}` {{entity_id: pair.src, graph_tag: $graph_tag}})
+                  -[r:DIRECTED]-
+                  (end:`{workspace_label}` {{entity_id: pair.tgt, graph_tag: $graph_tag}})
             RETURN pair.src AS src_id, pair.tgt AS tgt_id, collect(properties(r)) AS edges
             """
-            result = await session.run(query, pairs=pairs)
+            result = await session.run(query, pairs=pairs, graph_tag=graph_tag)
             edges_dict = {}
             async for record in result:
                 src = record["src_id"]
@@ -813,7 +826,9 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges_dict
 
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         """Retrieves all edges (relationships) for a particular node identified by its label.
 
         Args:
@@ -834,11 +849,13 @@ class Neo4JStorage(BaseGraphStorage):
                 results = None
                 try:
                     workspace_label = self._get_workspace_label()
-                    query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
+                    query = f"""MATCH (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}})
                             OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
-                            WHERE connected.entity_id IS NOT NULL
+                            WHERE connected.entity_id IS NOT NULL AND connected.graph_tag = $graph_tag
                             RETURN n, r, connected"""
-                    results = await session.run(query, entity_id=source_node_id)
+                    results = await session.run(
+                        query, entity_id=source_node_id, graph_tag=graph_tag
+                    )
 
                     edges = []
                     async for record in results:
@@ -881,7 +898,7 @@ class Neo4JStorage(BaseGraphStorage):
             raise
 
     async def get_nodes_edges_batch(
-        self, node_ids: list[str]
+        self, node_ids: list[str], graph_tag: str = "default"
     ) -> dict[str, list[tuple[str, str]]]:
         """
         Batch retrieve edges for multiple nodes in one query using UNWIND.
@@ -904,13 +921,14 @@ class Neo4JStorage(BaseGraphStorage):
             workspace_label = self._get_workspace_label()
             query = f"""
                 UNWIND $node_ids AS id
-                MATCH (n:`{workspace_label}` {{entity_id: id}})
+                MATCH (n:`{workspace_label}` {{entity_id: id, graph_tag: $graph_tag}})
                 OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
+                WHERE connected.graph_tag = $graph_tag OR connected IS NULL
                 RETURN id AS queried_id, n.entity_id AS node_entity_id,
                        connected.entity_id AS connected_entity_id,
                        startNode(r).entity_id AS start_entity_id
             """
-            result = await session.run(query, node_ids=node_ids)
+            result = await session.run(query, node_ids=node_ids, graph_tag=graph_tag)
 
             # Initialize the dictionary with empty lists for each node ID
             edges_dict = {node_id: [] for node_id in node_ids}
@@ -963,22 +981,27 @@ class Neo4JStorage(BaseGraphStorage):
             node_data: Dictionary of node properties
         """
         workspace_label = self._get_workspace_label()
-        properties = node_data
+        properties = dict(node_data or {})
         entity_type = properties["entity_type"]
         logger.info(f"node_data: {node_data}, node_id: {node_id}")
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
+        graph_tag = properties.get("graph_tag", "default")
+        properties["graph_tag"] = graph_tag
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = f"""
-                    MERGE (n:`{workspace_label}` {{entity_id: $entity_id}})
+                    MERGE (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}})
                     SET n += $properties
                     SET n:`{entity_type}`
                     """
                     result = await tx.run(
-                        query, entity_id=node_id, properties=properties
+                        query,
+                        entity_id=node_id,
+                        graph_tag=graph_tag,
+                        properties=properties,
                     )
                     await result.consume()  # Ensure result is fully consumed
 
@@ -1019,19 +1042,21 @@ class Neo4JStorage(BaseGraphStorage):
             ValueError: If either source or target node does not exist or is not unique
         """
         try:
-            edge_properties = edge_data
+            edge_properties = dict(edge_data or {})
             raw_relation_type = edge_properties.get("relationship_type", "DIRECTED")
             # Normalize relationship type to be Neo4j-compatible (replace hyphens, spaces, etc.)
             relation_type = self._normalize_relationship_type(raw_relation_type)
+            graph_tag = edge_properties.get("graph_tag", "default")
+            edge_properties["graph_tag"] = graph_tag
             logger.info(f"source_node_id: {source_node_id}, target_node_id: {target_node_id}, edge_properties: {edge_data}, normalized_relation_type: {relation_type}")
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     workspace_label = self._get_workspace_label()
                     query = f"""
-                    MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})
+                    MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})
                     WITH source
-                    MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id}})
+                    MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}})
                     MERGE (source)-[r:`{relation_type}`]-(target)
                     SET r += $properties
                     RETURN r, source, target
@@ -1040,6 +1065,7 @@ class Neo4JStorage(BaseGraphStorage):
                         query,
                         source_entity_id=source_node_id,
                         target_entity_id=target_node_id,
+                        graph_tag=graph_tag,
                         properties=edge_properties
                     )
                     try:
@@ -1478,20 +1504,21 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """Delete a node with the specified label
 
         Args:
             node_id: The label of the node to delete
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
         """
 
         async def _do_delete(tx: AsyncManagedTransaction):
             workspace_label = self._get_workspace_label()
             query = f"""
-            MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
+            MATCH (n:`{workspace_label}` {{entity_id: $entity_id, graph_tag: $graph_tag}})
             DETACH DELETE n
             """
-            result = await tx.run(query, entity_id=node_id)
+            result = await tx.run(query, entity_id=node_id, graph_tag=graph_tag)
             logger.debug(f"[{self.workspace}] Deleted node with label '{node_id}'")
             await result.consume()  # Ensure result is fully consumed
 
@@ -1517,14 +1544,15 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Args:
             nodes: List of node labels to be deleted
+            graph_tag: Graph tag to filter nodes for graph isolation (default: "default")
         """
         for node in nodes:
-            await self.delete_node(node)
+            await self.delete_node(node, graph_tag=graph_tag)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -1541,22 +1569,29 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def remove_edges(self, edges: list[tuple[str, str]]):
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ):
         """Delete multiple edges
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
+            graph_tag: Graph tag to filter nodes/edges for graph isolation (default: "default")
         """
         for source, target in edges:
 
             async def _do_delete_edge(tx: AsyncManagedTransaction):
                 workspace_label = self._get_workspace_label()
                 query = f"""
-                MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id}})-[r]-(target:`{workspace_label}` {{entity_id: $target_entity_id}})
+                MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})-[r]-
+                      (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}})
                 DELETE r
                 """
                 result = await tx.run(
-                    query, source_entity_id=source, target_entity_id=target
+                    query,
+                    source_entity_id=source,
+                    target_entity_id=target,
+                    graph_tag=graph_tag,
                 )
                 logger.debug(
                     f"[{self.workspace}] Deleted edge from '{source}' to '{target}'"

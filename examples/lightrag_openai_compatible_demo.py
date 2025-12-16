@@ -263,33 +263,23 @@ async def main():
         cure_file = "/Users/mac/Downloads/lightrag_inspire/lightrag/方剂.json"
         #rag.addon_params["entity_types"] = cure_entity_types
         # 打开一个excel文件，读取所有sheet，每个sheet作为一个document插入
-        #content = excel_to_strings(cure_file)
-        with open(cure_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        print("before derive_schema_types", content[:1000])
-        await rag.aderive_schema_types(contents=content, graph_tag="standard_cure")
-        print("after derive_schema_types", rag.graph_tag_addon_params["standard_cure"]["entity_types"])
-        await rag.ainsert(content, file_paths=curelightrag/api/run_with_gunicorn.py_file, graph_tag="standard_cure")
 
         #decease_entity_types = ["疾病", "症状", "病因", "病机", "病位", "证型", "证候", "别名"]
         decease_file = "/Users/mac/Downloads/lightrag_inspire/data/decease_output.xlsx"
         # #rag.addon_params["entity_types"] = decease_entity_types
-        content_decease = excel_to_strings(decease_file)
-        print("before insert",  content_decease[:10])
-        #await rag.aderive_schema_types(contents=content_decease, graph_tag="standard_decease")
-        print("after derive_schema_types", rag.graph_tag_addon_params["standard_decease"]["entity_types"])
         print("rag.addon_params: ", rag.addon_params)
+        logger.info("rag.addon_params: ", rag.addon_params)
         # await rag.ainsert(content, file_paths=decease_file, graph_tag="default")
         # await rag.ainsert(content, file_paths=decease_file, graph_tag="standard_decease")
 
         # merge, graph_tag_list
-        #await rag.amerge_graph(graph_tags=["standard_cure", "standard_decease"])
+        await rag.amerge_graph(graph_tags=["test1", "test2"])
         
 
         # Perform naive search
-        print("\n=====================")
-        print("Query mode: naive")
-        print("=====================")
+        # print("\n=====================")
+        # print("Query mode: naive")
+        # print("=====================")
         resp = 0
         # resp = await rag.aquery(
         #     "What are the top themes in this story?",
@@ -301,9 +291,9 @@ async def main():
             print(resp)
 
         # Perform local search
-        print("\n=====================")
-        print("Query mode: local")
-        print("=====================")
+        # print("\n=====================")
+        # print("Query mode: local")
+        # print("=====================")
         # resp = await rag.aquery(
         #     "What are the top themes in this story?",
         #     param=QueryParam(mode="local", stream=True),

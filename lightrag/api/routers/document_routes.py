@@ -404,6 +404,10 @@ class DeleteDocRequest(BaseModel):
 
 class DeleteEntityRequest(BaseModel):
     entity_name: str = Field(..., description="The name of the entity to delete.")
+    graph_tag: str = Field(
+        default="default",
+        description="Graph tag to scope deletion (default: 'default').",
+    )
 
     @field_validator("entity_name", mode="after")
     @classmethod
@@ -416,6 +420,10 @@ class DeleteEntityRequest(BaseModel):
 class DeleteRelationRequest(BaseModel):
     source_entity: str = Field(..., description="The name of the source entity.")
     target_entity: str = Field(..., description="The name of the target entity.")
+    graph_tag: str = Field(
+        default="default",
+        description="Graph tag to scope deletion (default: 'default').",
+    )
 
     @field_validator("source_entity", "target_entity", mode="after")
     @classmethod
@@ -2635,7 +2643,9 @@ def create_document_routes(
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
         try:
-            result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            result = await rag.adelete_by_entity(
+                entity_name=request.entity_name, graph_tag=request.graph_tag
+            )
             if result.status == "not_found":
                 raise HTTPException(status_code=404, detail=result.message)
             if result.status == "fail":
@@ -2673,6 +2683,7 @@ def create_document_routes(
             result = await rag.adelete_by_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
+                graph_tag=request.graph_tag,
             )
             if result.status == "not_found":
                 raise HTTPException(status_code=404, detail=result.message)
@@ -2984,4 +2995,4 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    return routerlightrag_webui/src/hooks/useLightragGraph.tsx 
+    return router

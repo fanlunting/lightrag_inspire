@@ -153,7 +153,9 @@ class MemgraphStorage(BaseGraphStorage):
                     )  # Ensure the result is consumed even on error
                 raise
 
-    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+    async def has_edge(
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
+    ) -> bool:
         """
         Check if an edge exists between two nodes in the graph.
 
@@ -256,7 +258,7 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def node_degree(self, node_id: str) -> int:
+    async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
         """Get the degree (number of relationships) of a node with the given label.
         If multiple nodes have the same label, returns the degree of the first node.
         If no node is found, returns 0.
@@ -343,7 +345,9 @@ class MemgraphStorage(BaseGraphStorage):
                     )  # Ensure the result is consumed even on error
                 raise
 
-    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
+    async def get_node_edges(
+        self, source_node_id: str, graph_tag: str = "default"
+    ) -> list[tuple[str, str]] | None:
         """Retrieves all edges (relationships) for a particular node identified by its label.
 
         Args:
@@ -414,7 +418,7 @@ class MemgraphStorage(BaseGraphStorage):
             raise
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+        self, source_node_id: str, target_node_id: str, graph_tag: str = "default"
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes.
 
@@ -665,7 +669,7 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def delete_node(self, node_id: str) -> None:
+    async def delete_node(self, node_id: str, graph_tag: str = "default") -> None:
         """Delete a node with the specified label
 
         Args:
@@ -696,7 +700,7 @@ class MemgraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node deletion: {str(e)}")
             raise
 
-    async def remove_nodes(self, nodes: list[str]):
+    async def remove_nodes(self, nodes: list[str], graph_tag: str = "default"):
         """Delete multiple nodes
 
         Args:
@@ -709,7 +713,9 @@ class MemgraphStorage(BaseGraphStorage):
         for node in nodes:
             await self.delete_node(node)
 
-    async def remove_edges(self, edges: list[tuple[str, str]]):
+    async def remove_edges(
+        self, edges: list[tuple[str, str]], graph_tag: str = "default"
+    ):
         """Delete multiple edges
 
         Args:
@@ -779,7 +785,7 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 return {"status": "error", "message": str(e)}
 
-    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+    async def edge_degree(self, src_id: str, tgt_id: str, graph_tag: str = "default") -> int:
         """Get the total degree (sum of relationships) of two nodes.
 
         Args:
@@ -793,8 +799,8 @@ class MemgraphStorage(BaseGraphStorage):
             raise RuntimeError(
                 "Memgraph driver is not initialized. Call 'await initialize()' first."
             )
-        src_degree = await self.node_degree(src_id)
-        trg_degree = await self.node_degree(tgt_id)
+        src_degree = await self.node_degree(src_id, graph_tag=graph_tag)
+        trg_degree = await self.node_degree(tgt_id, graph_tag=graph_tag)
 
         # Convert None to 0 for addition
         src_degree = 0 if src_degree is None else src_degree

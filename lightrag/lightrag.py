@@ -1818,6 +1818,18 @@ class LightRAG:
                                 )
                             content = content_data["content"]
 
+                            # One-time schema inference per graph_tag (best-effort).
+                            # This ensures extraction uses a derived schema when available.
+                            await self._maybe_aderive_schema_types_for_graph_tag(
+                                graph_tag,
+                                content,
+                                max_sample_tokens=4096,
+                                max_entity_types=20,
+                                max_relation_types=20,
+                                pipeline_status=pipeline_status,
+                                pipeline_status_lock=pipeline_status_lock,
+                            )
+
                             # Call chunking function, supporting both sync and async implementations
                             chunking_result = self.chunking_func(
                                 self.tokenizer,
@@ -3014,6 +3026,9 @@ class LightRAG:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             file_path = doc_status_data.get("file_path") if doc_status_data else None
+            graph_tag = (
+                doc_status_data.get("graph_tag", "default") if doc_status_data else "default"
+            )
             if not doc_status_data:
                 logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
@@ -3171,7 +3186,7 @@ class LightRAG:
                     entity_names = doc_entities_data["entity_names"]
                     # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
                     nodes_dict = await self.chunk_entity_relation_graph.get_nodes_batch(
-                        entity_names
+                        entity_names, graph_tag=graph_tag
                     )
                     for entity_name in entity_names:
                         node_data = nodes_dict.get(entity_name)
@@ -3189,7 +3204,7 @@ class LightRAG:
                     ]
                     # get_edges_batch returns dict[tuple[str, str], dict], need to convert to list[dict]
                     edges_dict = await self.chunk_entity_relation_graph.get_edges_batch(
-                        edge_pairs_dicts
+                        edge_pairs_dicts, graph_tag=graph_tag
                     )
 
                     for pair in relation_pairs:
@@ -3391,7 +3406,7 @@ class LightRAG:
 
                         # Delete from graph
                         await self.chunk_entity_relation_graph.remove_edges(
-                            list(relationships_to_delete)
+                            list(relationships_to_delete), graph_tag=graph_tag
                         )
 
                         # Delete from relation_chunks storage
@@ -3417,7 +3432,7 @@ class LightRAG:
                     try:
                         # Batch get all edges for entities to avoid N+1 query problem
                         nodes_edges_dict = await self.chunk_entity_relation_graph.get_nodes_edges_batch(
-                            list(entities_to_delete)
+                            list(entities_to_delete), graph_tag=graph_tag
                         )
 
                         # Debug: Check and log all edges before deleting nodes
@@ -3480,7 +3495,7 @@ class LightRAG:
 
                         # Delete from graph (edges will be auto-deleted with nodes)
                         await self.chunk_entity_relation_graph.remove_nodes(
-                            list(entities_to_delete)
+                            list(entities_to_delete), graph_tag=graph_tag
                         )
 
                         # Delete from vector vdb
@@ -3611,7 +3626,9 @@ class LightRAG:
                     f"No deletion operations were started for document {doc_id}, skipping persistence"
                 )
 
-    async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
+    async def adelete_by_entity(
+        self, entity_name: str, graph_tag: str = "default"
+    ) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
         Args:
@@ -3627,9 +3644,10 @@ class LightRAG:
             self.entities_vdb,
             self.relationships_vdb,
             entity_name,
+            graph_tag=graph_tag,
         )
 
-    def delete_by_entity(self, entity_name: str) -> DeletionResult:
+    def delete_by_entity(self, entity_name: str, graph_tag: str = "default") -> DeletionResult:
         """Synchronously delete an entity and all its relationships.
 
         Args:
@@ -3639,10 +3657,10 @@ class LightRAG:
             DeletionResult: An object containing the outcome of the deletion process.
         """
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.adelete_by_entity(entity_name))
+        return loop.run_until_complete(self.adelete_by_entity(entity_name, graph_tag=graph_tag))
 
     async def adelete_by_relation(
-        self, source_entity: str, target_entity: str
+        self, source_entity: str, target_entity: str, graph_tag: str = "default"
     ) -> DeletionResult:
         """Asynchronously delete a relation between two entities.
 
@@ -3660,10 +3678,11 @@ class LightRAG:
             self.relationships_vdb,
             source_entity,
             target_entity,
+            graph_tag=graph_tag,
         )
 
     def delete_by_relation(
-        self, source_entity: str, target_entity: str
+        self, source_entity: str, target_entity: str, graph_tag: str = "default"
     ) -> DeletionResult:
         """Synchronously delete a relation between two entities.
 
@@ -3676,7 +3695,7 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.adelete_by_relation(source_entity, target_entity)
+            self.adelete_by_relation(source_entity, target_entity, graph_tag=graph_tag)
         )
 
     async def get_processing_status(self) -> dict[str, int]:
@@ -4203,7 +4222,7 @@ class LightRAG:
                 continue
             canonical_map.setdefault(entity_id, []).append(dict(node))
             node_lookup[entity_id] = dict(node)
-
+        logger.info(f"amerge_graph: node_lookup: {canonical_map}")
         # SAME_AS：同 entity_id 的原节点之间
         same_edges: list[tuple[str, str]] = []
         for members in canonical_map.values():
@@ -4470,6 +4489,90 @@ class LightRAG:
             "graph_tag": normalized_graph_tag,
             "language": resolved_language,
         }
+
+    async def _maybe_aderive_schema_types_for_graph_tag(
+        self,
+        graph_tag: str | None,
+        content: str,
+        *,
+        max_sample_tokens: int = 4096,
+        max_entity_types: int = 20,
+        max_relation_types: int = 20,
+        pipeline_status: dict | None = None,
+        pipeline_status_lock: asyncio.Lock | None = None,
+    ) -> None:
+        """
+        Best-effort, one-time schema inference per graph_tag.
+
+        Called from the document processing pipeline before entity/relation
+        extraction. Guarded to avoid repeated calls and uses per-tag async locks
+        to prevent concurrent inference duplication.
+        """
+        normalized = self._normalize_graph_tag(graph_tag)
+        if not normalized:
+            return
+        if not isinstance(content, str) or not content.strip():
+            return
+
+        # If schema already exists (manual or inferred), do nothing.
+        tag_params = self.graph_tag_addon_params.get(normalized) or {}
+        if tag_params.get("entity_types") and tag_params.get("relation_types"):
+            return
+
+        # Avoid repeated attempts when inference fails or returns empty.
+        if tag_params.get("_schema_inference_attempted"):
+            return
+
+        # Lazily create lock map (dynamic attribute; do NOT add as dataclass field).
+        if not hasattr(self, "_schema_inference_locks"):
+            setattr(self, "_schema_inference_locks", {})
+        locks: dict[str, asyncio.Lock] = getattr(self, "_schema_inference_locks")
+        lock = locks.setdefault(normalized, asyncio.Lock())
+
+        async with lock:
+            # Re-check after acquiring lock.
+            tag_params = self.graph_tag_addon_params.get(normalized) or {}
+            if tag_params.get("entity_types") and tag_params.get("relation_types"):
+                return
+            if tag_params.get("_schema_inference_attempted"):
+                return
+
+            # Mark attempted before calling LLM to prevent thundering herd.
+            self.graph_tag_addon_params.setdefault(normalized, {})[
+                "_schema_inference_attempted"
+            ] = True
+            self.graph_tag_addon_params[normalized]["_schema_inference_attempted_at"] = int(
+                time.time()
+            )
+
+            try:
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["history_messages"].append(
+                            f"Inferring schema for graph_tag `{normalized}`"
+                        )
+
+                await self.aderive_schema_types(
+                    contents=content,
+                    sample_size=1,
+                    max_sample_tokens=max_sample_tokens,
+                    max_entity_types=max_entity_types,
+                    max_relation_types=max_relation_types,
+                    update_addon_params=True,
+                    graph_tag=normalized,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Schema inference failed for graph_tag `%s` (continuing with defaults): %s",
+                    normalized,
+                    exc,
+                )
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["history_messages"].append(
+                            f"Schema inference failed for graph_tag `{normalized}`; using defaults"
+                        )
+                return
 
     @staticmethod
     def _parse_schema_payload(raw_text: str) -> dict[str, Any]:
