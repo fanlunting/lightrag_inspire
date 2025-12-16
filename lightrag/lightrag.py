@@ -4215,43 +4215,84 @@ class LightRAG:
             raise ValueError(f"No nodes found for tags {normalized_tags}")
 
         canonical_map: dict[str, list[dict[str, Any]]] = {}
+        # One representative node per entity_id (for descriptions/LLM prompts).
         node_lookup: dict[str, dict[str, Any]] = {}
+        # All node instances per entity_id keyed by their graph_tag (for cross-tag SAME_AS/SIMILAR edges).
+        node_instances: dict[str, dict[str, dict[str, Any]]] = {}
         for node in target_nodes:
             entity_id = node.get("entity_id") or node.get("id")
             if not entity_id:
                 continue
             canonical_map.setdefault(entity_id, []).append(dict(node))
-            node_lookup[entity_id] = dict(node)
-        logger.info(f"amerge_graph: node_lookup: {canonical_map}")
-        # SAME_AS：同 entity_id 的原节点之间
-        same_edges: list[tuple[str, str]] = []
-        for members in canonical_map.values():
-            for i in range(len(members)):
-                for j in range(i + 1, len(members)):
-                    src = members[i]["entity_id"]
-                    tgt = members[j]["entity_id"]
-                    if src and tgt and src != tgt:
-                        same_edges.append((src, tgt))
+            if entity_id not in node_lookup:
+                node_lookup[entity_id] = dict(node)
+            # Prefer the longest description as the representative (helps LLM confirm).
+            else:
+                old_desc = str(node_lookup[entity_id].get("description") or "")
+                new_desc = str(node.get("description") or "")
+                if len(new_desc) > len(old_desc):
+                    node_lookup[entity_id] = dict(node)
 
-        async def _get_embedding(entity_name: str):
+            # Track per-tag instances so we can link across graph_tag in Neo4j.
+            tag = (_split(node.get("graph_tag")) or ["default"])[0]
+            node_instances.setdefault(entity_id, {})[tag] = dict(node)
+        logger.info(f"amerge_graph: node_lookup: {canonical_map}")
+        # SAME_AS: connect same entity_id across different graph_tag instances.
+        # For backends that support disambiguation by (entity_id, graph_tag) (e.g., Neo4j),
+        # we pass source_graph_tag/target_graph_tag in edge properties.
+        same_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
+        for entity_id, instances_by_tag in node_instances.items():
+            tags = sorted(instances_by_tag.keys())
+            if len(tags) < 2:
+                continue
+            for i in range(len(tags)):
+                for j in range(i + 1, len(tags)):
+                    same_edges.append((entity_id, tags[i], entity_id, tags[j]))
+
+        async def _get_embedding(entity_name: str) -> list[float] | None:
+            """
+            Fetch embedding for an entity from entities_vdb.
+
+            Important: many vector backends intentionally DO NOT return the vector in get_by_id()
+            (they return only metadata). So we rely on get_vectors_by_ids().
+            """
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
-            record = await self.entities_vdb.get_by_id(entity_vdb_id)
-            return record.get("embedding") if record else None
+            try:
+                vectors = await self.entities_vdb.get_vectors_by_ids([entity_vdb_id])
+                vec = vectors.get(entity_vdb_id)
+                return vec
+            except Exception as e:
+                logger.debug(f"amerge_graph: failed get_vectors_by_ids for {entity_name}: {e}")
+                # Best-effort fallback (some backends might return a vector-like field in get_by_id).
+                record = await self.entities_vdb.get_by_id(entity_vdb_id)
+                if not record:
+                    return None
+                return (
+                    record.get("embedding")
+                    or record.get("vector")
+                    or record.get("__vector__")
+                )
 
         # SIMILAR：向量+LLM
-        similar_edges: list[tuple[str, str]] = []
+        similar_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
         for entity_id in canonical_map.keys():
-            embedding = await _get_embedding(entity_id) # 
+            embedding = await _get_embedding(entity_id)
             if embedding is None:
                 continue
-            neighbors = await self.entities_vdb.query( # nano embedding, 
-                query=entity_id, top_k=top_k, query_embedding=embedding
-            )
+            neighbors = await self.entities_vdb.query(query=entity_id, top_k=top_k, query_embedding=embedding)
             for neighbor in neighbors:
-                other_id = neighbor["entity_name"]
-                if other_id == entity_id or neighbor["score"] < similarity_threshold:
+                other_id = neighbor.get("entity_name") or neighbor.get("entity_id")
+                if not other_id:
                     continue
-                if other_id not in node_lookup:
+                score = neighbor.get("score")
+                if score is None:
+                    score = neighbor.get("distance")
+                if score is None:
+                    continue
+
+                if other_id == entity_id or float(score) < similarity_threshold:
+                    continue
+                if other_id not in node_instances:
                     continue
 
                 is_similar = True
@@ -4268,10 +4309,13 @@ class LightRAG:
                     is_similar = "YES" in answer.upper()
 
                 if is_similar:
-                    similar_edges.append((entity_id, other_id))
+                    # Create SIMILAR edges across all tag combinations between the two entities.
+                    for src_tag in node_instances.get(entity_id, {}).keys():
+                        for tgt_tag in node_instances.get(other_id, {}).keys():
+                            similar_edges.append((entity_id, src_tag, other_id, tgt_tag))
         
         async with graph_db_lock:
-            for src, tgt in same_edges:
+            for src, src_tag, tgt, tgt_tag in same_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
                     src,
                     tgt,
@@ -4279,9 +4323,11 @@ class LightRAG:
                         "relationship_type": "SAME_AS",
                         "fusion_tag": fusion_tag,
                         "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
                     }, # a,B  , A《 B， 新的关系，标识，
                 )
-            for src, tgt in similar_edges:
+            for src, src_tag, tgt, tgt_tag in similar_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
                     src,
                     tgt,
@@ -4289,6 +4335,8 @@ class LightRAG:
                         "relationship_type": "SIMILAR",
                         "fusion_tag": fusion_tag,
                         "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
                     },
                 )
             await self.chunk_entity_relation_graph.index_done_callback()

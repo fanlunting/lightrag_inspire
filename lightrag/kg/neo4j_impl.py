@@ -1046,29 +1046,62 @@ class Neo4JStorage(BaseGraphStorage):
             raw_relation_type = edge_properties.get("relationship_type", "DIRECTED")
             # Normalize relationship type to be Neo4j-compatible (replace hyphens, spaces, etc.)
             relation_type = self._normalize_relationship_type(raw_relation_type)
+
+            # By default, graph isolation uses a single graph_tag for both endpoints.
+            # For fusion-like operations we optionally allow different tags per endpoint:
+            # - source_graph_tag: match source node by this graph_tag
+            # - target_graph_tag: match target node by this graph_tag
+            source_graph_tag = edge_properties.get("source_graph_tag")
+            target_graph_tag = edge_properties.get("target_graph_tag")
+
             graph_tag = edge_properties.get("graph_tag", "default")
+            # Keep storing a graph_tag on the relationship for later filtering/inspection.
             edge_properties["graph_tag"] = graph_tag
-            logger.info(f"source_node_id: {source_node_id}, target_node_id: {target_node_id}, edge_properties: {edge_data}, normalized_relation_type: {relation_type}")
+
+            logger.info(
+                f"source_node_id: {source_node_id}, target_node_id: {target_node_id}, "
+                f"edge_properties: {edge_data}, normalized_relation_type: {relation_type}"
+            )
+
             async with self._driver.session(database=self._DATABASE) as session:
 
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     workspace_label = self._get_workspace_label()
-                    query = f"""
-                    MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})
-                    WITH source
-                    MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}})
-                    MERGE (source)-[r:`{relation_type}`]-(target)
-                    SET r += $properties
-                    RETURN r, source, target
-                    """
-                    result = await tx.run(
-                        query,
-                        source_entity_id=source_node_id,
-                        target_entity_id=target_node_id,
-                        graph_tag=graph_tag,
-                        properties=edge_properties
-                    )
-                    
+
+                    if source_graph_tag and target_graph_tag:
+                        query = f"""
+                        MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $source_graph_tag}})
+                        WITH source
+                        MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $target_graph_tag}})
+                        MERGE (source)-[r:`{relation_type}`]-(target)
+                        SET r += $properties
+                        RETURN r, source, target
+                        """
+                        params = {
+                            "source_entity_id": source_node_id,
+                            "target_entity_id": target_node_id,
+                            "source_graph_tag": source_graph_tag,
+                            "target_graph_tag": target_graph_tag,
+                            "properties": edge_properties,
+                        }
+                    else:
+                        query = f"""
+                        MATCH (source:`{workspace_label}` {{entity_id: $source_entity_id, graph_tag: $graph_tag}})
+                        WITH source
+                        MATCH (target:`{workspace_label}` {{entity_id: $target_entity_id, graph_tag: $graph_tag}})
+                        MERGE (source)-[r:`{relation_type}`]-(target)
+                        SET r += $properties
+                        RETURN r, source, target
+                        """
+                        params = {
+                            "source_entity_id": source_node_id,
+                            "target_entity_id": target_node_id,
+                            "graph_tag": graph_tag,
+                            "properties": edge_properties,
+                        }
+
+                    result = await tx.run(query, **params)
+
                     try:
                         await result.fetch(2)
                     finally:
