@@ -4355,20 +4355,20 @@ class LightRAG:
         similarity_threshold: float = 0.85,
         top_k: int = 8,
         llm_confirm: bool = True,
-        link_to_sources: bool = True,
     ) -> dict[str, Any]:
         """
-        Fuse graphs (by graph_tag) into a NEW graph_tag (materialized fusion).
+        Create a NEW fusion graph_tag by writing ONLY new relationships (no node changes).
 
-        Compared to :meth:`amerge_graph` (in-place), this method:
-        - creates a new fused graph_tag and writes one fused node per entity_id
-        - writes SIMILAR edges BETWEEN fused nodes (vector + optional LLM confirmation)
-        - optionally links fused nodes back to their source instances via MERGED_FROM edges
-          (for Neo4j, this uses source_graph_tag/target_graph_tag disambiguation).
+        This is essentially :meth:`amerge_graph` but:
+        - it generates a new `fused_graph_tag` (call it "C")
+        - it writes SAME_AS / SIMILAR edges whose *relationship properties* include
+          `graph_tag = fused_graph_tag` for easier filtering/deletion
+        - endpoints remain the original nodes from the source graph_tags (A/B/...)
 
-        Notes:
-        - Nodes in the source graphs are NOT modified.
-        - The fused graph can be deleted cleanly by deleting nodes with graph_tag == fused_graph_tag.
+        For Neo4j, endpoints are disambiguated via:
+        - source_graph_tag / target_graph_tag in relationship properties
+
+        Result is "edge-only": A/B nodes remain untouched.
         """
         if not graph_tags:
             raise ValueError("graph_tags cannot be empty")
@@ -4415,9 +4415,6 @@ class LightRAG:
         node_lookup: dict[str, dict[str, Any]] = {}
         # All node instances per entity_id per graph_tag (Neo4j disambiguation).
         node_instances: dict[str, dict[str, dict[str, Any]]] = {}
-        # Track per-entity aggregated attribute values (avoid creating invalid Neo4j labels).
-        merged_fields: dict[str, dict[str, list[str]]] = {}
-        merged_entity_types: dict[str, list[str]] = {}
 
         for node in target_nodes:
             entity_id = node.get("entity_id") or node.get("id")
@@ -4438,72 +4435,18 @@ class LightRAG:
                 if tag in normalized_tags:
                     node_instances.setdefault(entity_id, {})[tag] = dict(node)
 
-            merged_fields.setdefault(
-                entity_id,
-                {"description": [], "file_path": [], "source_id": []},
-            )
-            for field in ("description", "file_path", "source_id"):
-                merged_fields[entity_id][field].extend(_split(node.get(field)))
-
-            if node.get("entity_type"):
-                merged_entity_types.setdefault(entity_id, []).extend(
-                    _split(node.get("entity_type"))
-                )
-
         if not node_lookup:
             raise ValueError(f"No valid nodes found for tags {normalized_tags}")
 
-        # 1) Write fused nodes (one per entity_id) under the new fused graph_tag.
-        async with graph_db_lock:
-            for entity_id, base_node in node_lookup.items():
-                payload = dict(base_node)
-                payload["entity_id"] = entity_id
-                payload["graph_tag"] = fused_graph_tag
-                payload["merged_from_graph_tags"] = _join(
-                    sorted(node_instances.get(entity_id, {}).keys())
-                )
-                payload["merged_from_instances"] = _join(
-                    [f"{entity_id}@{t}" for t in sorted(node_instances.get(entity_id, {}).keys())]
-                )
-                payload["updated_at"] = int(time.time())
-
-                # Keep a SINGLE entity_type for Neo4j label assignment.
-                # Store the full merged set separately.
-                merged_types = [t for t in merged_entity_types.get(entity_id, []) if t]
-                payload["merged_entity_types"] = _join(merged_types)
-                payload["entity_type"] = (
-                    str(base_node.get("entity_type")).strip()
-                    if str(base_node.get("entity_type") or "").strip()
-                    else (merged_types[0] if merged_types else "Entity")
-                )
-
-                # Merge common descriptive fields.
-                for field, values in merged_fields.get(entity_id, {}).items():
-                    if values:
-                        payload[field] = _join(values)
-
-                await self.chunk_entity_relation_graph.upsert_node(entity_id, payload)
-
-        # 2) Optionally link fused nodes back to source nodes (cross-tag edges in Neo4j).
-        merged_from_edges: list[tuple[str, str]] = []  # (entity_id, source_tag)
-        if link_to_sources:
-            async with graph_db_lock:
-                for entity_id, by_tag in node_instances.items():
-                    for source_tag in by_tag.keys():
-                        await self.chunk_entity_relation_graph.upsert_edge(
-                            entity_id,
-                            entity_id,
-                            {
-                                "relationship_type": "MERGED_FROM",
-                                "graph_tag": fused_graph_tag,
-                                "fusion_tag": fused_graph_tag,
-                                "created_at": int(time.time()),
-                                "source_graph_tag": fused_graph_tag,
-                                "target_graph_tag": source_tag,
-                                "origin_graph_tag": source_tag,
-                            },
-                        )
-                        merged_from_edges.append((entity_id, source_tag))
+        # SAME_AS: connect same entity_id across different graph_tag instances.
+        same_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
+        for entity_id, instances_by_tag in node_instances.items():
+            tags = sorted(instances_by_tag.keys())
+            if len(tags) < 2:
+                continue
+            for i in range(len(tags)):
+                for j in range(i + 1, len(tags)):
+                    same_edges.append((entity_id, tags[i], entity_id, tags[j]))
 
         async def _get_embedding(entity_name: str) -> list[float] | None:
             """
@@ -4530,10 +4473,9 @@ class LightRAG:
                     or record.get("__vector__")
                 )
 
-        # 3) Build SIMILAR edges inside the fused graph_tag (vector + optional LLM confirm).
-        similar_edges: set[tuple[str, str]] = set()
-        fused_entity_ids = set(node_lookup.keys())
-        for entity_id in fused_entity_ids:
+        # SIMILAR: vector + optional LLM confirm, across selected graph_tags.
+        similar_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
+        for entity_id in node_instances.keys():
             embedding = await _get_embedding(entity_id)
             if embedding is None:
                 continue
@@ -4552,7 +4494,7 @@ class LightRAG:
                 if score is None or float(score) < similarity_threshold:
                     continue
 
-                if other_id not in fused_entity_ids:
+                if other_id not in node_instances:
                     continue
 
                 is_similar = True
@@ -4569,11 +4511,25 @@ class LightRAG:
                     is_similar = "YES" in answer.upper()
 
                 if is_similar:
-                    a, b = sorted((entity_id, other_id))
-                    similar_edges.add((a, b))
+                    for src_tag in node_instances.get(entity_id, {}).keys():
+                        for tgt_tag in node_instances.get(other_id, {}).keys():
+                            similar_edges.append((entity_id, src_tag, other_id, tgt_tag))
 
         async with graph_db_lock:
-            for src, tgt in sorted(similar_edges):
+            for src, src_tag, tgt, tgt_tag in same_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SAME_AS",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
+                    },
+                )
+            for src, src_tag, tgt, tgt_tag in similar_edges:
                 await self.chunk_entity_relation_graph.upsert_edge(
                     src,
                     tgt,
@@ -4582,6 +4538,8 @@ class LightRAG:
                         "graph_tag": fused_graph_tag,
                         "fusion_tag": fused_graph_tag,
                         "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
                     },
                 )
             await self.chunk_entity_relation_graph.index_done_callback()
@@ -4589,8 +4547,7 @@ class LightRAG:
         return {
             "graph_tag": fused_graph_tag,
             "source_graph_tags": normalized_tags,
-            "nodes_written": len(node_lookup),
-            "merged_from_edges": len(merged_from_edges),
+            "same_edges": len(same_edges),
             "similar_edges": len(similar_edges),
         }
     
