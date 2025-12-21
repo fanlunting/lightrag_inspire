@@ -301,10 +301,31 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
         const newData = { ...data, hidden: false, labelColor, color: edgeColor }
 
+        // Fusion edge base styling (before hover/selection overrides)
+        const relationshipType = graph.getEdgeAttribute(edge, 'relationship_type')
+        const edgeFusionTag = graph.getEdgeAttribute(edge, 'fusion_tag')
+        const isFusionEdge = Boolean(edgeFusionTag) || relationshipType === 'SAME_AS' || relationshipType === 'SIMILAR'
+
+        if (isFusionEdge) {
+          if (relationshipType === 'SAME_AS') newData.color = Constants.fusionEdgeColorSameAs
+          else if (relationshipType === 'SIMILAR') newData.color = Constants.fusionEdgeColorSimilar
+          else newData.color = Constants.fusionEdgeColorAnyFusion
+
+          // Slightly thicker so users can "feel" fusion edges at a glance
+          if (typeof newData.size === 'number') {
+            newData.size = Math.min(newData.size * 1.15, 10)
+          }
+        }
+
         // Fusion filter: only show edges with matching fusion_tag
         if (fusionTagFilter) {
-          const edgeFusionTag = graph.getEdgeAttribute(edge, 'fusion_tag')
-          if (edgeFusionTag !== fusionTagFilter) {
+          // Special mode: show ANY fusion edges (fusion_tag exists)
+          if (fusionTagFilter === Constants.fusionTagAny) {
+            if (!edgeFusionTag) {
+              newData.hidden = true
+              return newData
+            }
+          } else if (edgeFusionTag !== fusionTagFilter) {
             newData.hidden = true
             return newData
           }

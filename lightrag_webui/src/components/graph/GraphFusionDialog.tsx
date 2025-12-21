@@ -15,6 +15,7 @@ import { AsyncSearch } from '@/components/ui/AsyncSearch'
 import { getGraphTags, mergeGraphTagsInPlace, type GraphTagsMergeResult } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { cn } from '@/lib/utils'
+import { fusionTagAny } from '@/lib/constants'
 
 type FusionHistoryItem = {
   fusion_tag: string
@@ -133,6 +134,11 @@ export default function GraphFusionDialog({
   const applyFilter = useCallback((fusionTag: string) => {
     setFusionTagFilter(fusionTag)
     toast.message('Applied fusion edge filter in graph viewer')
+  }, [setFusionTagFilter])
+
+  const applyAnyFusionFilter = useCallback(() => {
+    setFusionTagFilter(fusionTagAny)
+    toast.message('Showing all fusion edges (any fusion_tag)')
   }, [setFusionTagFilter])
 
   const clearFilter = useCallback(() => {
@@ -315,6 +321,15 @@ export default function GraphFusionDialog({
                           >
                             <Filter className="h-4 w-4" />
                             仅看该融合边
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={applyAnyFusionFilter}
+                          >
+                            <Filter className="h-4 w-4" />
+                            仅看所有融合边
                           </Button>
                         </div>
                       </div>
