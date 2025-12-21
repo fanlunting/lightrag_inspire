@@ -4348,6 +4348,251 @@ class LightRAG:
             "same_edges": len(same_edges),
             "similar_edges": len(similar_edges),
         }
+
+    async def amerge_graph_new_tag(
+        self,
+        graph_tags: list[str],
+        similarity_threshold: float = 0.85,
+        top_k: int = 8,
+        llm_confirm: bool = True,
+        link_to_sources: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Fuse graphs (by graph_tag) into a NEW graph_tag (materialized fusion).
+
+        Compared to :meth:`amerge_graph` (in-place), this method:
+        - creates a new fused graph_tag and writes one fused node per entity_id
+        - writes SIMILAR edges BETWEEN fused nodes (vector + optional LLM confirmation)
+        - optionally links fused nodes back to their source instances via MERGED_FROM edges
+          (for Neo4j, this uses source_graph_tag/target_graph_tag disambiguation).
+
+        Notes:
+        - Nodes in the source graphs are NOT modified.
+        - The fused graph can be deleted cleanly by deleting nodes with graph_tag == fused_graph_tag.
+        """
+        if not graph_tags:
+            raise ValueError("graph_tags cannot be empty")
+
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags:
+            raise ValueError("graph_tags must contain non-empty values")
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fused_graph_tag = "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+        fused_graph_tag = f"{fused_graph_tag}_{timestamp_suffix}"
+
+        def _split(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+
+        def _join(values: list[str]) -> str:
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for item in values:
+                if item and item not in seen:
+                    seen.add(item)
+                    ordered.append(item)
+            return GRAPH_FIELD_SEP.join(ordered)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+
+        target_nodes = [n for n in nodes if _has_tag(n)]
+        if not target_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+
+        # One representative node per entity_id (prefer longest description).
+        node_lookup: dict[str, dict[str, Any]] = {}
+        # All node instances per entity_id per graph_tag (Neo4j disambiguation).
+        node_instances: dict[str, dict[str, dict[str, Any]]] = {}
+        # Track per-entity aggregated attribute values (avoid creating invalid Neo4j labels).
+        merged_fields: dict[str, dict[str, list[str]]] = {}
+        merged_entity_types: dict[str, list[str]] = {}
+
+        for node in target_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+
+            # Representative selection for LLM prompt + payload base
+            if entity_id not in node_lookup:
+                node_lookup[entity_id] = dict(node)
+            else:
+                old_desc = str(node_lookup[entity_id].get("description") or "")
+                new_desc = str(node.get("description") or "")
+                if len(new_desc) > len(old_desc):
+                    node_lookup[entity_id] = dict(node)
+
+            tags = _split(node.get("graph_tag")) or ["default"]
+            for tag in tags:
+                if tag in normalized_tags:
+                    node_instances.setdefault(entity_id, {})[tag] = dict(node)
+
+            merged_fields.setdefault(
+                entity_id,
+                {"description": [], "file_path": [], "source_id": []},
+            )
+            for field in ("description", "file_path", "source_id"):
+                merged_fields[entity_id][field].extend(_split(node.get(field)))
+
+            if node.get("entity_type"):
+                merged_entity_types.setdefault(entity_id, []).extend(
+                    _split(node.get("entity_type"))
+                )
+
+        if not node_lookup:
+            raise ValueError(f"No valid nodes found for tags {normalized_tags}")
+
+        # 1) Write fused nodes (one per entity_id) under the new fused graph_tag.
+        async with graph_db_lock:
+            for entity_id, base_node in node_lookup.items():
+                payload = dict(base_node)
+                payload["entity_id"] = entity_id
+                payload["graph_tag"] = fused_graph_tag
+                payload["merged_from_graph_tags"] = _join(
+                    sorted(node_instances.get(entity_id, {}).keys())
+                )
+                payload["merged_from_instances"] = _join(
+                    [f"{entity_id}@{t}" for t in sorted(node_instances.get(entity_id, {}).keys())]
+                )
+                payload["updated_at"] = int(time.time())
+
+                # Keep a SINGLE entity_type for Neo4j label assignment.
+                # Store the full merged set separately.
+                merged_types = [t for t in merged_entity_types.get(entity_id, []) if t]
+                payload["merged_entity_types"] = _join(merged_types)
+                payload["entity_type"] = (
+                    str(base_node.get("entity_type")).strip()
+                    if str(base_node.get("entity_type") or "").strip()
+                    else (merged_types[0] if merged_types else "Entity")
+                )
+
+                # Merge common descriptive fields.
+                for field, values in merged_fields.get(entity_id, {}).items():
+                    if values:
+                        payload[field] = _join(values)
+
+                await self.chunk_entity_relation_graph.upsert_node(entity_id, payload)
+
+        # 2) Optionally link fused nodes back to source nodes (cross-tag edges in Neo4j).
+        merged_from_edges: list[tuple[str, str]] = []  # (entity_id, source_tag)
+        if link_to_sources:
+            async with graph_db_lock:
+                for entity_id, by_tag in node_instances.items():
+                    for source_tag in by_tag.keys():
+                        await self.chunk_entity_relation_graph.upsert_edge(
+                            entity_id,
+                            entity_id,
+                            {
+                                "relationship_type": "MERGED_FROM",
+                                "graph_tag": fused_graph_tag,
+                                "fusion_tag": fused_graph_tag,
+                                "created_at": int(time.time()),
+                                "source_graph_tag": fused_graph_tag,
+                                "target_graph_tag": source_tag,
+                                "origin_graph_tag": source_tag,
+                            },
+                        )
+                        merged_from_edges.append((entity_id, source_tag))
+
+        async def _get_embedding(entity_name: str) -> list[float] | None:
+            """
+            Fetch embedding for an entity from entities_vdb.
+
+            Many vector backends intentionally do not return vectors in get_by_id();
+            prefer get_vectors_by_ids() and fall back to metadata-only records.
+            """
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            try:
+                vectors = await self.entities_vdb.get_vectors_by_ids([entity_vdb_id])
+                vec = vectors.get(entity_vdb_id)
+                return vec
+            except Exception as e:
+                logger.debug(
+                    f"amerge_graph_new_tag: failed get_vectors_by_ids for {entity_name}: {e}"
+                )
+                record = await self.entities_vdb.get_by_id(entity_vdb_id)
+                if not record:
+                    return None
+                return (
+                    record.get("embedding")
+                    or record.get("vector")
+                    or record.get("__vector__")
+                )
+
+        # 3) Build SIMILAR edges inside the fused graph_tag (vector + optional LLM confirm).
+        similar_edges: set[tuple[str, str]] = set()
+        fused_entity_ids = set(node_lookup.keys())
+        for entity_id in fused_entity_ids:
+            embedding = await _get_embedding(entity_id)
+            if embedding is None:
+                continue
+
+            neighbors = await self.entities_vdb.query(
+                query=entity_id, top_k=top_k, query_embedding=embedding
+            )
+            for neighbor in neighbors:
+                other_id = neighbor.get("entity_name") or neighbor.get("entity_id")
+                if not other_id or other_id == entity_id:
+                    continue
+
+                score = neighbor.get("score")
+                if score is None:
+                    score = neighbor.get("distance")
+                if score is None or float(score) < similarity_threshold:
+                    continue
+
+                if other_id not in fused_entity_ids:
+                    continue
+
+                is_similar = True
+                if llm_confirm:
+                    desc_a = node_lookup[entity_id].get("description", "")
+                    desc_b = node_lookup[other_id].get("description", "")
+                    prompt = (
+                        "请判断以下两个实体是否描述的是同一事物或高度相关：\n"
+                        f"实体A：{entity_id}\n描述：{desc_a}\n\n"
+                        f"实体B：{other_id}\n描述：{desc_b}\n\n"
+                        "若相同/高度相关，回复 YES，否则回复 NO。"
+                    )
+                    answer = await self.llm_model_func(prompt)
+                    is_similar = "YES" in answer.upper()
+
+                if is_similar:
+                    a, b = sorted((entity_id, other_id))
+                    similar_edges.add((a, b))
+
+        async with graph_db_lock:
+            for src, tgt in sorted(similar_edges):
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SIMILAR",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+            await self.chunk_entity_relation_graph.index_done_callback()
+
+        return {
+            "graph_tag": fused_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "nodes_written": len(node_lookup),
+            "merged_from_edges": len(merged_from_edges),
+            "similar_edges": len(similar_edges),
+        }
     
     def derive_schema_types(
         self,
