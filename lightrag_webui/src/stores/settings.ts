@@ -27,6 +27,14 @@ interface SettingsState {
   showLegend: boolean
   setShowLegend: (show: boolean) => void
 
+  // Graph tag filter (knowledge graph)
+  // Semantics:
+  // - [] means no filtering (show all graph tags)
+  // - OR semantics: a node matches if it has ANY selected tag
+  // - missing graph_tag is treated as "default" on backend
+  selectedGraphTags: string[]
+  setSelectedGraphTags: (tags: string[]) => void
+
   showNodeLabel: boolean
   enableNodeDrag: boolean
 
@@ -92,6 +100,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       showPropertyPanel: true,
       showNodeSearchBar: true,
       showLegend: false,
+      selectedGraphTags: [],
 
       showNodeLabel: true,
       enableNodeDrag: true,
@@ -199,6 +208,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setShowFileName: (show: boolean) => set({ showFileName: show }),
       setShowLegend: (show: boolean) => set({ showLegend: show }),
+      setSelectedGraphTags: (tags: string[]) => set({ selectedGraphTags: tags }),
       setDocumentsPageSize: (size: number) => set({ documentsPageSize: size }),
 
       // User prompt history methods
@@ -238,7 +248,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -340,6 +350,10 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          // Add selectedGraphTags for older versions
+          state.selectedGraphTags = []
         }
         return state
       }

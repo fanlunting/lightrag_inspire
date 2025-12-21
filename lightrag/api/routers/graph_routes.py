@@ -275,6 +275,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
     ):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified label.
@@ -300,6 +304,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 node_label=label,
                 max_depth=max_depth,
                 max_nodes=max_nodes,
+                graph_tags=graph_tags,
             )
         except Exception as e:
             logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")

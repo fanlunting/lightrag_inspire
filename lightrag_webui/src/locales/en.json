@@ -361,6 +361,15 @@
       "placeholder": "Search nodes in page...",
       "message": "And {{count}} others"
     },
+    "graphTagFilter": {
+      "label": "Graph tags",
+      "placeholder": "All graph tags",
+      "selectedCount": "Tags: {{count}}",
+      "searchPlaceholder": "Search graph tags...",
+      "noResults": "No tags found",
+      "clear": "Clear selection",
+      "tooltip": "Filter the graph by graph_tag (empty = no filtering)"
+    },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No matching nodes found",
