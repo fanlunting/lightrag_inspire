@@ -1117,6 +1117,7 @@ class Neo4JStorage(BaseGraphStorage):
         node_label: str,
         max_depth: int = 3,
         max_nodes: int = None,
+        graph_tags: list[str] | None = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -1125,6 +1126,7 @@ class Neo4JStorage(BaseGraphStorage):
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
+            graph_tags: List of graph tags to filter nodes/edges. If None, defaults to ["default"]
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
@@ -1137,10 +1139,23 @@ class Neo4JStorage(BaseGraphStorage):
             # Limit max_nodes to not exceed global_config max_graph_nodes
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
+        # Handle graph_tags: if None, default to ["default"]
+        if graph_tags is None:
+            graph_tags = ["default"]
+        
         workspace_label = self._get_workspace_label()
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
+
+        # Build graph_tag filter condition for Cypher queries
+        if len(graph_tags) == 1:
+            graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+            graph_tag_filter_rel = f"connected.graph_tag = '{graph_tags[0]}'"
+        else:
+            graph_tags_str = "', '".join(graph_tags)
+            graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
+            graph_tag_filter_rel = f"connected.graph_tag IN ['{graph_tags_str}']"
 
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
@@ -1149,7 +1164,9 @@ class Neo4JStorage(BaseGraphStorage):
                 if node_label == "*":
                     # First check total node count to determine if graph is truncated
                     count_query = (
-                        f"MATCH (n:`{workspace_label}`) RETURN count(n) as total"
+                        f"MATCH (n:`{workspace_label}`) "
+                        f"WHERE {graph_tag_filter} "
+                        f"RETURN count(n) as total"
                     )
                     count_result = None
                     try:
@@ -1168,15 +1185,19 @@ class Neo4JStorage(BaseGraphStorage):
                     # Run main query to get nodes with highest degree
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
-                    OPTIONAL MATCH (n)-[r]-()
+                    WHERE {graph_tag_filter}
+                    OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
+                    WHERE connected.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
                     WITH n, COALESCE(count(r), 0) AS degree
                     ORDER BY degree DESC
                     LIMIT $max_nodes
                     WITH collect({{node: n}}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    OPTIONAL MATCH (a)-[r]-(b)
-                    WHERE a IN kept_nodes AND b IN kept_nodes
+                    OPTIONAL MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
+                    WHERE a IN kept_nodes AND b IN kept_nodes 
+                          AND a.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
+                          AND b.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
                     """
@@ -1192,11 +1213,17 @@ class Neo4JStorage(BaseGraphStorage):
                             await result_set.consume()
 
                 else:
-                    # return await self._robust_fallback(node_label, max_depth, max_nodes)
+                    # Build graph_tag filter for entity_id query
+                    if len(graph_tags) == 1:
+                        entity_filter = f"start.entity_id = $entity_id AND start.graph_tag = '{graph_tags[0]}'"
+                    else:
+                        graph_tags_str = "', '".join(graph_tags)
+                        entity_filter = f"start.entity_id = $entity_id AND start.graph_tag IN ['{graph_tags_str}']"
+                    
                     # First try without limit to check if we need to truncate
                     full_query = f"""
                     MATCH (start:`{workspace_label}`)
-                    WHERE start.entity_id = $entity_id
+                    WHERE {entity_filter}
                     WITH start
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '',
@@ -1208,6 +1235,8 @@ class Neo4JStorage(BaseGraphStorage):
                     YIELD nodes, relationships
                     WITH nodes, relationships, size(nodes) AS total_nodes
                     UNWIND nodes AS node
+                    WITH node, relationships, total_nodes
+                    WHERE node.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
                     WITH collect({{node: node}}) AS node_info, relationships, total_nodes
                     RETURN node_info, relationships, total_nodes
                     """
@@ -1250,7 +1279,7 @@ class Neo4JStorage(BaseGraphStorage):
                             # Run limited query
                             limited_query = f"""
                             MATCH (start:`{workspace_label}`)
-                            WHERE start.entity_id = $entity_id
+                            WHERE {entity_filter}
                             WITH start
                             CALL apoc.path.subgraphAll(start, {{
                                 relationshipFilter: '',
@@ -1262,6 +1291,8 @@ class Neo4JStorage(BaseGraphStorage):
                             }})
                             YIELD nodes, relationships
                             UNWIND nodes AS node
+                            WITH node, relationships
+                            WHERE node.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
                             WITH collect({{node: node}}) AS node_info, relationships
                             RETURN node_info, relationships
                             """
@@ -1320,33 +1351,61 @@ class Neo4JStorage(BaseGraphStorage):
                     )
 
             except neo4jExceptions.ClientError as e:
-                logger.warning(f"[{self.workspace}] APOC plugin error: {str(e)}")
-                if node_label != "*":
-                    logger.warning(
-                        f"[{self.workspace}] Neo4j: falling back to basic Cypher recursive search..."
-                    )
-                    return await self._robust_fallback(node_label, max_depth, max_nodes)
+                error_code = getattr(e, 'code', '')
+                if 'ProcedureNotFound' in str(e) or 'apoc' in str(e).lower():
+                    logger.warning(f"[{self.workspace}] APOC plugin not available: {str(e)}")
+                    if node_label != "*":
+                        logger.warning(
+                            f"[{self.workspace}] Neo4j: falling back to basic Cypher recursive search..."
+                        )
+                        return await self._robust_fallback(node_label, max_depth, max_nodes, graph_tags)
+                    else:
+                        logger.warning(
+                            f"[{self.workspace}] Neo4j: APOC plugin error with wildcard query, returning empty result"
+                        )
+                        return result
                 else:
-                    logger.warning(
-                        f"[{self.workspace}] Neo4j: APOC plugin error with wildcard query, returning empty result"
-                    )
+                    logger.error(f"[{self.workspace}] Error in get_knowledge_graph: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"[{self.workspace}] Error in get_knowledge_graph: {e}")
+                raise
 
         return result
 
     async def _robust_fallback(
-        self, node_label: str, max_depth: int, max_nodes: int
+        self, node_label: str, max_depth: int, max_nodes: int, graph_tags: list[str] | None = None
     ) -> KnowledgeGraph:
         """
         Fallback implementation when APOC plugin is not available or incompatible.
         This method implements the same functionality as get_knowledge_graph but uses
         only basic Cypher queries and true breadth-first traversal instead of APOC procedures.
+        
+        Args:
+            node_label: Label of the starting node
+            max_depth: Maximum depth of the subgraph
+            max_nodes: Maximum nodes to return
+            graph_tags: List of graph tags to filter nodes/edges. If None, defaults to ["default"]
         """
         from collections import deque
+
+        # Handle graph_tags: if None, default to ["default"]
+        if graph_tags is None:
+            graph_tags = ["default"]
 
         result = KnowledgeGraph()
         visited_nodes = set()
         visited_edges = set()
         visited_edge_pairs = set()
+
+        # Build graph_tag filter condition
+        if len(graph_tags) == 1:
+            graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+            graph_tag_filter_rel = f"b.graph_tag = '{graph_tags[0]}'"
+        else:
+            graph_tags_str = "', '".join(graph_tags)
+            graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
+            graph_tag_filter_rel = f"b.graph_tag IN ['{graph_tags_str}']"
 
         # Get the starting node's data
         workspace_label = self._get_workspace_label()
@@ -1355,6 +1414,7 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
+            WHERE {graph_tag_filter}
             RETURN id(n) as node_id, n
             """
             node_result = await session.run(query, entity_id=node_label)
@@ -1414,7 +1474,8 @@ class Neo4JStorage(BaseGraphStorage):
             ) as session:
                 workspace_label = self._get_workspace_label()
                 query = f"""
-                MATCH (a:`{workspace_label}` {{entity_id: $entity_id}})-[r]-(b)
+                MATCH (a:`{workspace_label}` {{entity_id: $entity_id}})-[r]-(b:`{workspace_label}`)
+                WHERE {graph_tag_filter_rel}
                 WITH r, b, id(r) as edge_id, id(b) as target_id
                 RETURN r, b, edge_id, target_id
                 """

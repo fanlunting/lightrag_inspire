@@ -350,9 +350,20 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  graphTags?: string[]
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const params = new URLSearchParams()
+  params.set('label', label)
+  params.set('max_depth', String(maxDepth))
+  params.set('max_nodes', String(maxNodes))
+  if (graphTags && graphTags.length > 0) {
+    for (const tag of graphTags) {
+      const trimmed = tag.trim()
+      if (trimmed) params.append('graph_tags', trimmed)
+    }
+  }
+  const response = await axiosInstance.get(`/graphs?${params.toString()}`)
   return response.data
 }
 
