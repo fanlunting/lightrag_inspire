@@ -16,6 +16,7 @@ import FullScreenControl from '@/components/graph/FullScreenControl'
 import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
+import GraphTagFilter from '@/components/graph/GraphTagFilter'
 import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
@@ -123,6 +124,7 @@ const GraphViewer = () => {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
+  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
 
   // Memoize sigma settings to prevent unnecessary re-creation
   const memoizedSigmaSettings = useMemo(() => {
@@ -192,6 +194,17 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
+  const onGraphTagsChange = useCallback((tags: string[]) => {
+    useSettingsStore.getState().setSelectedGraphTags(tags)
+    const graphState = useGraphStore.getState()
+    // Clear selection to avoid pointing to nodes outside the filtered graph
+    graphState.clearSelection()
+    // Force graph data refresh
+    graphState.setGraphDataFetchAttempted(false)
+    graphState.setLastSuccessfulQueryLabel('')
+    graphState.incrementGraphDataVersion()
+  }, [])
+
   // Always render SigmaContainer but control its visibility with CSS
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -209,11 +222,14 @@ const GraphViewer = () => {
         <div className="absolute top-2 left-2 flex items-start gap-2">
           <GraphLabels />
           {showNodeSearchBar && !isThemeSwitching && (
-            <GraphSearch
-              value={searchInitSelectedNode}
-              onFocus={onSearchFocus}
-              onChange={onSearchSelect}
-            />
+            <>
+              <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
+              <GraphSearch
+                value={searchInitSelectedNode}
+                onFocus={onSearchFocus}
+                onChange={onSearchSelect}
+              />
+            </>
           )}
         </div>
 

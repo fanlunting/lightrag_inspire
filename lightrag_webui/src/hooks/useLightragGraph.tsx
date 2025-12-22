@@ -101,10 +101,11 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
   // If label is empty, use default label '*'
   const queryLabel = label || '*';
+  const selectedGraphTags = useSettingsStore.getState().selectedGraphTags;
 
   try {
     console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes, selectedGraphTags);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -267,6 +268,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 const useLightrangeGraph = () => {
   const { t } = useTranslation()
   const queryLabel = useSettingsStore.use.queryLabel()
+  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
@@ -461,7 +463,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, selectedGraphTags])
 
   // Handle node expansion
   useEffect(() => {
@@ -484,7 +486,7 @@ const useLightrangeGraph = () => {
         }
 
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 1000);
+        const extendedGraph = await queryGraphs(label, 2, 1000, selectedGraphTags);
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');

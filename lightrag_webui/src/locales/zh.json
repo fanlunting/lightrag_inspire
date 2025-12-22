@@ -361,6 +361,15 @@
       "placeholder": "页面内搜索节点...",
       "message": "还有 {{count}} 个"
     },
+    "graphTagFilter": {
+      "label": "Graph Tag",
+      "placeholder": "全部 graph_tag",
+      "selectedCount": "已选 {{count}} 项",
+      "searchPlaceholder": "搜索 graph_tag...",
+      "noResults": "未找到标签",
+      "clear": "清空选择",
+      "tooltip": "按 graph_tag 过滤图（不选=不筛选）"
+    },
     "graphLabels": {
       "selectTooltip": "获取节点(标签)子图",
       "noLabels": "未找到匹配的节点",
