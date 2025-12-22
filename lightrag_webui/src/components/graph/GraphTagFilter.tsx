@@ -76,7 +76,10 @@ const GraphTagFilter = ({ value, onChange, className }: Props) => {
           role="combobox"
           aria-expanded={open}
           aria-label={t('graphPanel.graphTagFilter.label')}
-          className={cn('justify-between min-w-[160px]', className)}
+          className={cn(
+            'bg-background/60 w-[220px] justify-between rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:opacity-100',
+            className
+          )}
           tooltip={t('graphPanel.graphTagFilter.tooltip')}
           side="bottom"
         >
