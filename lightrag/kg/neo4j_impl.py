@@ -1237,7 +1237,6 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                             node_filter = f"node.graph_tag IN ['{graph_tags_str}']"
                         pre_apoc_with = "WITH start"
-                        post_apoc_with_extra = ""
                     else:
                         # No graph_tag filter: choose a single best-matching start node (across all tags)
                         # to keep the result deterministic and compatible with `.single()`.
@@ -1247,10 +1246,10 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH start, count(r) AS degree
                         ORDER BY degree DESC
                         LIMIT 1
-                        WITH start, start.graph_tag AS selected_graph_tag
+                        WITH start
                         """
-                        node_filter = "node.graph_tag = selected_graph_tag"
-                        post_apoc_with_extra = ", selected_graph_tag"
+                        # No filtering: keep all nodes returned by traversal
+                        node_filter = "true"
                     
                     # First try without limit to check if we need to truncate
                     full_query = f"""
@@ -1265,11 +1264,11 @@ class Neo4JStorage(BaseGraphStorage):
                         bfs: true
                     }})
                     YIELD nodes, relationships
-                    WITH nodes, relationships, size(nodes) AS total_nodes{post_apoc_with_extra}
+                    WITH nodes, relationships, size(nodes) AS total_nodes
                     UNWIND nodes AS node
-                    WITH node, relationships, total_nodes{post_apoc_with_extra}
+                    WITH node, relationships, total_nodes
                     WHERE {node_filter}
-                    WITH collect({{node: node}}) AS node_info, relationships, total_nodes{post_apoc_with_extra}
+                    WITH collect({{node: node}}) AS node_info, relationships, total_nodes
                     RETURN node_info, relationships, total_nodes
                     """
 
@@ -1323,7 +1322,7 @@ class Neo4JStorage(BaseGraphStorage):
                             }})
                             YIELD nodes, relationships
                             UNWIND nodes AS node
-                            WITH node, relationships{post_apoc_with_extra}
+                            WITH node, relationships
                             WHERE {node_filter}
                             WITH collect({{node: node}}) AS node_info, relationships
                             RETURN node_info, relationships
