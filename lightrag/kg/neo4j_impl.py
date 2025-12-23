@@ -1126,7 +1126,9 @@ class Neo4JStorage(BaseGraphStorage):
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
-            graph_tags: List of graph tags to filter nodes/edges. If None, defaults to ["default"]
+            graph_tags: Optional list of graph tags to filter nodes/edges.
+                - None / [] means no filtering (search across all graph_tag values)
+                - Otherwise, only nodes with matching graph_tag are considered.
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
@@ -1139,9 +1141,9 @@ class Neo4JStorage(BaseGraphStorage):
             # Limit max_nodes to not exceed global_config max_graph_nodes
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
-        # Handle graph_tags: if None, default to ["default"]
-        if graph_tags is None:
-            graph_tags = ["default"]
+        # Normalize graph_tags (treat None / [] as "no filtering")
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
         
         workspace_label = self._get_workspace_label()
         result = KnowledgeGraph()
@@ -1149,13 +1151,14 @@ class Neo4JStorage(BaseGraphStorage):
         seen_edges = set()
 
         # Build graph_tag filter condition for Cypher queries
-        if len(graph_tags) == 1:
-            graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
-            graph_tag_filter_rel = f"connected.graph_tag = '{graph_tags[0]}'"
+        if has_graph_tag_filter:
+            if len(graph_tags) == 1:
+                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+            else:
+                graph_tags_str = "', '".join(graph_tags)
+                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
         else:
-            graph_tags_str = "', '".join(graph_tags)
-            graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
-            graph_tag_filter_rel = f"connected.graph_tag IN ['{graph_tags_str}']"
+            graph_tag_filter = "true"
 
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
@@ -1183,11 +1186,19 @@ class Neo4JStorage(BaseGraphStorage):
                             await count_result.consume()
 
                     # Run main query to get nodes with highest degree
+                    if has_graph_tag_filter:
+                        graph_tag_list = "[" + ", ".join([f"'{t}'" for t in graph_tags]) + "]"
+                        connected_filter_clause = f"WHERE connected.graph_tag IN {graph_tag_list}"
+                        kept_filter_clause = f"AND a.graph_tag IN {graph_tag_list} AND b.graph_tag IN {graph_tag_list}"
+                    else:
+                        connected_filter_clause = ""
+                        kept_filter_clause = ""
+
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
                     WHERE {graph_tag_filter}
                     OPTIONAL MATCH (n)-[r]-(connected:`{workspace_label}`)
-                    WHERE connected.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
+                    {connected_filter_clause}
                     WITH n, COALESCE(count(r), 0) AS degree
                     ORDER BY degree DESC
                     LIMIT $max_nodes
@@ -1195,9 +1206,8 @@ class Neo4JStorage(BaseGraphStorage):
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
                     OPTIONAL MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
-                    WHERE a IN kept_nodes AND b IN kept_nodes 
-                          AND a.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
-                          AND b.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
+                    WHERE a IN kept_nodes AND b IN kept_nodes
+                          {kept_filter_clause}
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
                     """
@@ -1214,17 +1224,39 @@ class Neo4JStorage(BaseGraphStorage):
 
                 else:
                     # Build graph_tag filter for entity_id query
-                    if len(graph_tags) == 1:
-                        entity_filter = f"start.entity_id = $entity_id AND start.graph_tag = '{graph_tags[0]}'"
+                    if has_graph_tag_filter:
+                        if len(graph_tags) == 1:
+                            entity_filter = (
+                                f"start.entity_id = $entity_id AND start.graph_tag = '{graph_tags[0]}'"
+                            )
+                            node_filter = f"node.graph_tag = '{graph_tags[0]}'"
+                        else:
+                            graph_tags_str = "', '".join(graph_tags)
+                            entity_filter = (
+                                f"start.entity_id = $entity_id AND start.graph_tag IN ['{graph_tags_str}']"
+                            )
+                            node_filter = f"node.graph_tag IN ['{graph_tags_str}']"
+                        pre_apoc_with = "WITH start"
+                        post_apoc_with_extra = ""
                     else:
-                        graph_tags_str = "', '".join(graph_tags)
-                        entity_filter = f"start.entity_id = $entity_id AND start.graph_tag IN ['{graph_tags_str}']"
+                        # No graph_tag filter: choose a single best-matching start node (across all tags)
+                        # to keep the result deterministic and compatible with `.single()`.
+                        entity_filter = "start.entity_id = $entity_id"
+                        pre_apoc_with = """
+                        OPTIONAL MATCH (start)-[r]-()
+                        WITH start, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        WITH start, start.graph_tag AS selected_graph_tag
+                        """
+                        node_filter = "node.graph_tag = selected_graph_tag"
+                        post_apoc_with_extra = ", selected_graph_tag"
                     
                     # First try without limit to check if we need to truncate
                     full_query = f"""
                     MATCH (start:`{workspace_label}`)
                     WHERE {entity_filter}
-                    WITH start
+                    {pre_apoc_with}
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '',
                         labelFilter: '{workspace_label}',
@@ -1233,11 +1265,11 @@ class Neo4JStorage(BaseGraphStorage):
                         bfs: true
                     }})
                     YIELD nodes, relationships
-                    WITH nodes, relationships, size(nodes) AS total_nodes
+                    WITH nodes, relationships, size(nodes) AS total_nodes{post_apoc_with_extra}
                     UNWIND nodes AS node
-                    WITH node, relationships, total_nodes
-                    WHERE node.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
-                    WITH collect({{node: node}}) AS node_info, relationships, total_nodes
+                    WITH node, relationships, total_nodes{post_apoc_with_extra}
+                    WHERE {node_filter}
+                    WITH collect({{node: node}}) AS node_info, relationships, total_nodes{post_apoc_with_extra}
                     RETURN node_info, relationships, total_nodes
                     """
 
@@ -1280,7 +1312,7 @@ class Neo4JStorage(BaseGraphStorage):
                             limited_query = f"""
                             MATCH (start:`{workspace_label}`)
                             WHERE {entity_filter}
-                            WITH start
+                            {pre_apoc_with}
                             CALL apoc.path.subgraphAll(start, {{
                                 relationshipFilter: '',
                                 labelFilter: '{workspace_label}',
@@ -1291,8 +1323,8 @@ class Neo4JStorage(BaseGraphStorage):
                             }})
                             YIELD nodes, relationships
                             UNWIND nodes AS node
-                            WITH node, relationships
-                            WHERE node.graph_tag IN {graph_tags if len(graph_tags) > 1 else f"['{graph_tags[0]}']"}
+                            WITH node, relationships{post_apoc_with_extra}
+                            WHERE {node_filter}
                             WITH collect({{node: node}}) AS node_info, relationships
                             RETURN node_info, relationships
                             """
