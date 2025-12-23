@@ -1416,13 +1416,15 @@ class Neo4JStorage(BaseGraphStorage):
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph
             max_nodes: Maximum nodes to return
-            graph_tags: List of graph tags to filter nodes/edges. If None, defaults to ["default"]
+            graph_tags: Optional list of graph tags to filter nodes/edges.
+                - None / [] means no filtering
+                - Otherwise, only nodes with matching graph_tag are considered.
         """
         from collections import deque
 
-        # Handle graph_tags: if None, default to ["default"]
-        if graph_tags is None:
-            graph_tags = ["default"]
+        # Normalize graph_tags (treat None / [] as "no filtering")
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
 
         result = KnowledgeGraph()
         visited_nodes = set()
@@ -1430,13 +1432,17 @@ class Neo4JStorage(BaseGraphStorage):
         visited_edge_pairs = set()
 
         # Build graph_tag filter condition
-        if len(graph_tags) == 1:
-            graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
-            graph_tag_filter_rel = f"b.graph_tag = '{graph_tags[0]}'"
+        if has_graph_tag_filter:
+            if len(graph_tags) == 1:
+                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+                graph_tag_filter_rel = f"b.graph_tag = '{graph_tags[0]}'"
+            else:
+                graph_tags_str = "', '".join(graph_tags)
+                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
+                graph_tag_filter_rel = f"b.graph_tag IN ['{graph_tags_str}']"
         else:
-            graph_tags_str = "', '".join(graph_tags)
-            graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
-            graph_tag_filter_rel = f"b.graph_tag IN ['{graph_tags_str}']"
+            graph_tag_filter = "true"
+            graph_tag_filter_rel = "true"
 
         # Get the starting node's data
         workspace_label = self._get_workspace_label()
