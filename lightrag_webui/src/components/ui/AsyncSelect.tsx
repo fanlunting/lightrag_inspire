@@ -267,14 +267,11 @@ export function AsyncSelect<T>({
             <CommandGroup>
               {options.map((option) => {
                 const optionValue = getOptionValue(option);
-                // Fix cmdk filtering issue: use empty string when search is empty
-                // This ensures all items are shown when searchTerm is empty
-                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
 
                 return (
                   <CommandItem
                     key={optionValue}
-                    value={itemValue}
+                    value={optionValue}
                     onSelect={() => {
                       handleSelect(optionValue);
                     }}

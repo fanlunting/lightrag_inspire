@@ -130,12 +130,10 @@ const GraphTagFilter = ({ value, onChange, className }: Props) => {
             <CommandGroup>
               {options.map((tag) => {
                 const isSelected = selected.includes(tag)
-                // cmdk filtering workaround: empty value shows all when searchTerm empty
-                const itemValue = searchTerm.trim() === '' ? '' : tag
                 return (
                   <CommandItem
                     key={tag}
-                    value={itemValue}
+                    value={tag}
                     onSelect={() => toggleTag(tag)}
                     className="truncate"
                   >
