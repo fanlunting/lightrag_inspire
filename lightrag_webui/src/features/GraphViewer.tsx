@@ -220,12 +220,12 @@ const GraphViewer = () => {
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
         <div className="absolute top-2 left-2 flex flex-wrap items-start gap-2">
-          <div className="order-1">
+          <div className="order-2">
             <GraphLabels />
           </div>
           {showNodeSearchBar && !isThemeSwitching && (
             <>
-              <div className="order-2">
+              <div className="order-1">
                 <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
               </div>
               <div className="order-3 min-w-[220px]">
