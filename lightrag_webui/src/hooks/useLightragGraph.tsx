@@ -411,10 +411,9 @@ const useLightrangeGraph = () => {
           const errorMessage = useBackendState.getState().message;
           const isAuthError = errorMessage && errorMessage.includes('Authentication required');
 
-          // Only clear queryLabel if it's not an auth error and current label is not empty
-          if (!isAuthError && currentQueryLabel) {
-            useSettingsStore.getState().setQueryLabel('');
-          }
+          // Do NOT auto-clear queryLabel on empty graphs.
+          // Empty results can be legitimate (e.g., graph tag filters, backend limitations),
+          // and clearing the label makes GraphLabels look like "selection didn't work".
 
           // Only clear last successful query label if it's not an auth error
           if (!isAuthError) {
