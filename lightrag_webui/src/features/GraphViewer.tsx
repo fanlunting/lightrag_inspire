@@ -219,16 +219,22 @@ const GraphViewer = () => {
 
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-        <div className="absolute top-2 left-2 flex items-start gap-2">
-          <GraphLabels />
+        <div className="absolute top-2 left-2 flex flex-wrap items-start gap-2">
+          <div className="order-1">
+            <GraphLabels />
+          </div>
           {showNodeSearchBar && !isThemeSwitching && (
             <>
-              <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
-              <GraphSearch
-                value={searchInitSelectedNode}
-                onFocus={onSearchFocus}
-                onChange={onSearchSelect}
-              />
+              <div className="order-2">
+                <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
+              </div>
+              <div className="order-3 min-w-[220px]">
+                <GraphSearch
+                  value={searchInitSelectedNode}
+                  onFocus={onSearchFocus}
+                  onChange={onSearchSelect}
+                />
+              </div>
             </>
           )}
         </div>
