@@ -17,11 +17,13 @@ import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
 import GraphTagFilter from '@/components/graph/GraphTagFilter'
+import GraphRefreshButton from '@/components/graph/GraphRefreshButton'
 import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
 import GraphFusionControl from '@/components/graph/GraphFusionControl'
+import useLightragGraph from '@/hooks/useLightragGraph'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -205,6 +207,12 @@ const GraphViewer = () => {
     graphState.incrementGraphDataVersion()
   }, [])
 
+  // Ensure graph data fetching logic is always mounted (even if property panel is hidden)
+  const GraphDataLoader = () => {
+    useLightragGraph()
+    return null
+  }
+
   // Always render SigmaContainer but control its visibility with CSS
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -213,6 +221,7 @@ const GraphViewer = () => {
         className="!bg-background !size-full overflow-hidden"
         ref={sigmaRef}
       >
+        <GraphDataLoader />
         <GraphControl />
 
         {enableNodeDrag && <GraphEvents />}
@@ -220,13 +229,16 @@ const GraphViewer = () => {
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
         <div className="absolute top-2 left-2 flex flex-wrap items-start gap-2">
-          <div className="order-2">
-            <GraphLabels />
+          <div className="order-0 flex items-center">
+            <GraphRefreshButton />
           </div>
           {showNodeSearchBar && !isThemeSwitching && (
             <>
               <div className="order-1">
                 <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
+              </div>
+              <div className="order-2">
+                <GraphLabels />
               </div>
               <div className="order-3 min-w-[220px]">
                 <GraphSearch
