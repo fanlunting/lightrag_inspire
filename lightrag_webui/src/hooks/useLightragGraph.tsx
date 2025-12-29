@@ -1,5 +1,5 @@
 import Graph, { UndirectedGraph } from 'graphology'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
@@ -265,10 +265,25 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
+// Helper function to compare arrays by content
+const arraysEqual = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) return false
+  return a.every((val, index) => val === b[index])
+}
+
 const useLightrangeGraph = () => {
   const { t } = useTranslation()
   const queryLabel = useSettingsStore.use.queryLabel()
-  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
+  const selectedGraphTagsRaw = useSettingsStore.use.selectedGraphTags()
+  // Stabilize selectedGraphTags reference to prevent unnecessary re-renders
+  // Only update when array contents actually change
+  const prevTagsRef = useRef<string[]>([])
+  const selectedGraphTags = useMemo(() => {
+    if (!arraysEqual(prevTagsRef.current, selectedGraphTagsRaw)) {
+      prevTagsRef.current = [...selectedGraphTagsRaw] // Create a new array copy
+    }
+    return prevTagsRef.current
+  }, [selectedGraphTagsRaw])
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
