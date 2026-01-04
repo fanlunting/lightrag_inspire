@@ -220,38 +220,73 @@ class NetworkXStorage(BaseGraphStorage):
         # Return sorted list
         return sorted(list(labels))
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Get popular labels by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
+            graph_tags: List of graph tags to filter nodes
 
         Returns:
             List of labels sorted by degree (highest first)
         """
         graph = await self._get_graph()
 
+        if graph_tags:
+            target_tags = set(graph_tags)
+            filtered_nodes = []
+            for node, data in graph.nodes(data=True):
+                raw_tag = data.get("graph_tag")
+                node_tags = set()
+                
+                if raw_tag:
+                    if isinstance(raw_tag, str):
+                        for t in raw_tag.split(GRAPH_FIELD_SEP):
+                            if t.strip():
+                                node_tags.add(t.strip())
+                    elif isinstance(raw_tag, list):
+                        for t in raw_tag:
+                            if str(t).strip():
+                                node_tags.add(str(t).strip())
+                    else:
+                        if str(raw_tag).strip():
+                            node_tags.add(str(raw_tag).strip())
+                else:
+                    # Treat missing tag as "default"
+                    node_tags.add("default")
+
+                if node_tags.intersection(target_tags):
+                    filtered_nodes.append(node)
+            
+            degrees = {node: graph.degree(node) for node in filtered_nodes}
+        else:
+            degrees = dict(graph.degree())
+
         # Get degrees of all nodes and sort by degree descending
-        degrees = dict(graph.degree())
         sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
 
         # Return top labels limited by the specified limit
         popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]
 
         logger.debug(
-            f"[{self.workspace}] Retrieved {len(popular_labels)} popular labels (limit: {limit})"
+            f"[{self.workspace}] Retrieved {len(popular_labels)} popular labels (limit: {limit}, tags: {graph_tags})"
         )
 
         return popular_labels
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Search labels with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
+            graph_tags: List of graph tags to filter nodes
 
         Returns:
             List of matching labels sorted by relevance
@@ -259,12 +294,48 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
         query_lower = query.lower().strip()
 
-        if not query_lower:
+        if not query_lower and not graph_tags:
             return []
 
         # Collect matching nodes with relevance scores
         matches = []
-        for node in graph.nodes():
+        target_tags = set(graph_tags) if graph_tags else None
+
+        for node, data in graph.nodes(data=True):
+            # 1. Filter by tags if provided
+            if target_tags:
+                raw_tag = data.get("graph_tag")
+                node_tags = set()
+                if raw_tag:
+                    if isinstance(raw_tag, str):
+                        for t in raw_tag.split(GRAPH_FIELD_SEP):
+                            if t.strip():
+                                node_tags.add(t.strip())
+                    elif isinstance(raw_tag, list):
+                        for t in raw_tag:
+                            if str(t).strip():
+                                node_tags.add(str(t).strip())
+                    else:
+                        if str(raw_tag).strip():
+                            node_tags.add(str(raw_tag).strip())
+                else:
+                    node_tags.add("default")
+                
+                if not node_tags.intersection(target_tags):
+                    continue
+
+            # 2. Match query
+            if not query_lower:
+                # If query is empty but tags are provided, return all nodes in tags (up to limit)
+                # But search_labels usually expects a query. 
+                # If query is empty, we return empty list usually.
+                # But here if we just want to list nodes in a tag...
+                # The original implementation returns [] if not query_lower.
+                # Let's keep that behavior for now unless user input '*' which is handled by frontend calling get_popular_labels usually?
+                # Frontend: if query is empty or '*', it calls getHistoryLabels or getPopularLabels.
+                # So here query is likely not empty.
+                continue
+
             node_str = str(node)
             node_lower = node_str.lower()
 
@@ -296,7 +367,7 @@ class NetworkXStorage(BaseGraphStorage):
         search_results = [match[0] for match in matches[:limit]]
 
         logger.debug(
-            f"[{self.workspace}] Search query '{query}' returned {len(search_results)} results (limit: {limit})"
+            f"[{self.workspace}] Search query '{query}' returned {len(search_results)} results (limit: {limit}, tags: {graph_tags})"
         )
 
         return search_results
@@ -327,6 +398,7 @@ class NetworkXStorage(BaseGraphStorage):
         node_label: str,
         max_depth: int = 3,
         max_nodes: int = None,
+        graph_tags: list[str] | None = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -335,6 +407,7 @@ class NetworkXStorage(BaseGraphStorage):
             node_label: Label of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
+            graph_tags: List of graph tags to filter nodes
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
@@ -350,13 +423,43 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
 
         result = KnowledgeGraph()
+        target_tags = set(graph_tags) if graph_tags else None
+
+        # Helper to check if a node matches the tags
+        def node_matches_tags(n_id):
+            if not target_tags:
+                return True
+            data = graph.nodes[n_id]
+            raw_tag = data.get("graph_tag")
+            node_tags = set()
+            if raw_tag:
+                if isinstance(raw_tag, str):
+                    for t in raw_tag.split(GRAPH_FIELD_SEP):
+                        if t.strip():
+                            node_tags.add(t.strip())
+                elif isinstance(raw_tag, list):
+                    for t in raw_tag:
+                        if str(t).strip():
+                            node_tags.add(str(t).strip())
+                else:
+                    if str(raw_tag).strip():
+                        node_tags.add(str(raw_tag).strip())
+            else:
+                node_tags.add("default")
+            
+            return bool(node_tags.intersection(target_tags))
 
         # Handle special case for "*" label
         if node_label == "*":
             # Get degrees of all nodes
             degrees = dict(graph.degree())
-            # Sort nodes by degree in descending order and take top max_nodes
-            sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+            
+            # Filter nodes by tags if needed
+            if target_tags:
+                filtered_degrees = {n: d for n, d in degrees.items() if node_matches_tags(n)}
+                sorted_nodes = sorted(filtered_degrees.items(), key=lambda x: x[1], reverse=True)
+            else:
+                sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
 
             # Check if graph is truncated
             if len(sorted_nodes) > max_nodes:
@@ -375,6 +478,13 @@ class NetworkXStorage(BaseGraphStorage):
                     f"[{self.workspace}] Node {node_label} not found in the graph"
                 )
                 return KnowledgeGraph()  # Return empty graph
+            
+            # Check if start node matches tags
+            if not node_matches_tags(node_label):
+                 logger.warning(
+                    f"[{self.workspace}] Node {node_label} found but excluded by graph_tags filter"
+                )
+                 return KnowledgeGraph()
 
             # Use modified BFS to get nodes, prioritizing high-degree nodes at the same depth
             bfs_nodes = []
@@ -408,10 +518,13 @@ class NetworkXStorage(BaseGraphStorage):
                         if depth < max_depth:
                             # Add neighbor nodes to queue with incremented depth
                             neighbors = list(graph.neighbors(current_node))
-                            # Filter out already visited neighbors
-                            unvisited_neighbors = [
-                                n for n in neighbors if n not in visited
-                            ]
+                            # Filter out already visited neighbors AND filter by tags
+                            unvisited_neighbors = []
+                            for n in neighbors:
+                                if n not in visited:
+                                    if node_matches_tags(n):
+                                        unvisited_neighbors.append(n)
+                            
                             # Add neighbors to the queue with their degrees
                             for neighbor in unvisited_neighbors:
                                 neighbor_degree = graph.degree(neighbor)
@@ -419,8 +532,10 @@ class NetworkXStorage(BaseGraphStorage):
                         else:
                             # Check if there are unexplored neighbors (skipped due to depth limit)
                             neighbors = list(graph.neighbors(current_node))
+                            # We should check tag filter here too for accurate truncation reporting
+                            valid_neighbors = [n for n in neighbors if node_matches_tags(n)]
                             unvisited_neighbors = [
-                                n for n in neighbors if n not in visited
+                                n for n in valid_neighbors if n not in visited
                             ]
                             if unvisited_neighbors:
                                 has_unexplored_neighbors = True
