@@ -97,8 +97,11 @@ const GraphLabels = () => {
            // Actually, on initial mount, if tags are present, we probably DO want to fetch once?
            // The issue seen in logs is repeated calls.
            
+           // If backend fetch is not allowed (e.g. after tag change but before user interaction), return empty
            if (!backendFetchAllowed) {
-             return [];
+             // Return just '*' as a valid option even if we don't fetch backend data
+             // This ensures the dropdown isn't completely empty/loading forever if AsyncSelect expects something
+             return ['*'];
            }
 
            // If tags are selected (or *), fetch from backend
