@@ -20,7 +20,8 @@ const GraphLabels = () => {
   const [selectKey, setSelectKey] = useState(0)
   
   // State to control backend fetch
-  const [backendFetchAllowed, setBackendFetchAllowed] = useState(true)
+  // Initialize to FALSE to prevent auto-fetch on mount when tags are persisted
+  const [backendFetchAllowed, setBackendFetchAllowed] = useState(false)
   
   // Ref to track if initial mount has happened to avoid clearing on first render if not needed
   const isMounted = useRef(false);
@@ -86,6 +87,16 @@ const GraphLabels = () => {
         // Empty query:
         if (hasTags) {
            // If backend fetch is not allowed (e.g. after tag change but before user interaction), return empty
+           // BUT if it's the initial load (isMounted check might be tricky here, but we can rely on !query), 
+           // we might want to avoid auto-fetch too unless explicitly requested.
+           // However, if the user *just* loaded the page and has tags selected (persistence), 
+           // we probably SHOULD show something? Or maybe wait for interaction?
+           // The previous issue was *repeated* fetches. 
+           // Let's stick to: only fetch if backendFetchAllowed is true.
+           // For initial load, we might want to set backendFetchAllowed to false initially in state?
+           // Actually, on initial mount, if tags are present, we probably DO want to fetch once?
+           // The issue seen in logs is repeated calls.
+           
            if (!backendFetchAllowed) {
              return [];
            }
