@@ -15,6 +15,7 @@ const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
+  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
 
@@ -50,16 +51,35 @@ const GraphLabels = () => {
     }
   }, [dropdownRefreshTrigger])
 
+  // Force AsyncSelect to re-render when selectedGraphTags changes
+  useEffect(() => {
+    setSelectKey(prev => prev + 1)
+  }, [selectedGraphTags])
+
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
       let results: string[] = [];
+      const hasTags = selectedGraphTags && selectedGraphTags.length > 0;
+
       if (!query || query.trim() === '' || query.trim() === '*') {
-        // Empty query: return search history
-        results = SearchHistoryManager.getHistoryLabels(dropdownDisplayLimit)
+        // Empty query:
+        if (hasTags) {
+           // If tags are selected, always fetch from backend to ensure labels belong to tags
+           try {
+             const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, selectedGraphTags)
+             results = popularLabels
+           } catch (error) {
+             console.error('Failed to fetch filtered popular labels:', error)
+             results = []
+           }
+        } else {
+           // Default behavior: return search history
+           results = SearchHistoryManager.getHistoryLabels(dropdownDisplayLimit)
+        }
       } else {
         // Non-empty query: call backend search API
         try {
-          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit)
+          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit, selectedGraphTags)
           results = apiResults.length <= dropdownDisplayLimit
             ? apiResults
             : [...apiResults.slice(0, dropdownDisplayLimit), '...']
@@ -67,6 +87,7 @@ const GraphLabels = () => {
           console.error('Search API failed, falling back to local history search:', error)
 
           // Fallback to local history search
+          // Note: Local history doesn't support tag filtering, so this might return invalid results for current filter
           const history = SearchHistoryManager.getHistory()
           const queryLower = query.toLowerCase().trim()
           results = history
@@ -80,7 +101,7 @@ const GraphLabels = () => {
       return finalResults;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refreshTrigger] // Intentionally added to trigger re-creation when data changes
+    [refreshTrigger, selectedGraphTags] // Intentionally added to trigger re-creation when data changes
   )
 
   return (

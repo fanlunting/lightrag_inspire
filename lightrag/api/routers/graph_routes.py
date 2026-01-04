@@ -138,18 +138,25 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             300, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
     ):
         """
         Get popular labels by node degree (most connected entities)
 
         Args:
             limit (int): Maximum number of labels to return (default: 300, max: 1000)
+            graph_tags (List[str]): Optional list of graph tags to filter nodes
 
         Returns:
             List[str]: List of popular labels sorted by degree (highest first)
         """
         try:
-            return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+            return await rag.chunk_entity_relation_graph.get_popular_labels(
+                limit, graph_tags
+            )
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -163,6 +170,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             50, description="Maximum number of search results to return", ge=1, le=100
         ),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
     ):
         """
         Search labels with fuzzy matching
@@ -170,12 +181,15 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Args:
             q (str): Search query string
             limit (int): Maximum number of results to return (default: 50, max: 100)
+            graph_tags (List[str]): Optional list of graph tags to filter nodes
 
         Returns:
             List[str]: List of matching labels sorted by relevance
         """
         try:
-            return await rag.chunk_entity_relation_graph.search_labels(q, limit)
+            return await rag.chunk_entity_relation_graph.search_labels(
+                q, limit, graph_tags
+            )
         except Exception as e:
             logger.error(f"Error searching labels with query '{q}': {str(e)}")
             logger.error(traceback.format_exc())
