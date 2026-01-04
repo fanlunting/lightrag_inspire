@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useState, useRef, useMemo } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -18,10 +18,16 @@ import { getPopularLabels, searchLabels } from '@/api/lightrag'
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
+  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
   const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
+  
+  // Memoize graph tags to avoid unnecessary re-renders
+  const graphTagsForQuery = useMemo(() => {
+    return selectedGraphTags && selectedGraphTags.length > 0 ? selectedGraphTags : undefined
+  }, [selectedGraphTags])
 
   // Pipeline state monitoring
   const pipelineBusy = useBackendState.use.pipelineBusy()
@@ -49,7 +55,7 @@ const GraphLabels = () => {
       if (history.length === 0) {
         // If no history exists, fetch popular labels and initialize
         try {
-          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphTagsForQuery)
           await SearchHistoryManager.initializeWithDefaults(popularLabels)
         } catch (error) {
           console.error('Failed to initialize search history:', error)
@@ -59,7 +65,7 @@ const GraphLabels = () => {
     }
 
     initializeHistory()
-  }, [])
+  }, [graphTagsForQuery])
 
   // Force AsyncSelect to re-render when label changes externally (e.g., from entity rename/merge)
   useEffect(() => {
@@ -72,6 +78,12 @@ const GraphLabels = () => {
       setSelectKey(prev => prev + 1)
     }
   }, [dropdownRefreshTrigger])
+
+  // Force AsyncSelect to re-render when graph tags change
+  useEffect(() => {
+    setSelectKey(prev => prev + 1)
+    setRefreshTrigger(prev => prev + 1)
+  }, [graphTagsForQuery])
 
   // Monitor pipeline state changes: busy -> idle
   useEffect(() => {
@@ -88,7 +100,7 @@ const GraphLabels = () => {
 
     console.log('Reloading popular labels (triggered by pipeline idle)')
     try {
-      const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+      const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphTagsForQuery)
       SearchHistoryManager.clearHistory()
 
       if (popularLabels.length === 0) {
@@ -106,7 +118,7 @@ const GraphLabels = () => {
       // Always clear the flag
       shouldRefreshPopularLabelsRef.current = false
     }
-  }, [])
+  }, [graphTagsForQuery])
 
   // Helper: Bump dropdown data to trigger refresh
   const bumpDropdownData = useCallback(({ forceSelectKey = false } = {}) => {
@@ -125,7 +137,7 @@ const GraphLabels = () => {
       } else {
         // Non-empty query: call backend search API
         try {
-          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit)
+          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit, graphTagsForQuery)
           results = apiResults.length <= dropdownDisplayLimit
             ? apiResults
             : [...apiResults.slice(0, dropdownDisplayLimit), '...']
@@ -146,7 +158,7 @@ const GraphLabels = () => {
       return finalResults;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refreshTrigger] // Intentionally added to trigger re-creation when data changes
+    [refreshTrigger, graphTagsForQuery] // Intentionally added to trigger re-creation when data changes
   )
 
   const handleRefresh = useCallback(async () => {
@@ -191,7 +203,7 @@ const GraphLabels = () => {
 
         try {
           // Re-fetch popular labels and update search history (if not already done)
-          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphTagsForQuery)
           SearchHistoryManager.clearHistory()
 
           if (popularLabels.length === 0) {
@@ -228,7 +240,7 @@ const GraphLabels = () => {
     } finally {
       setIsRefreshing(false)
     }
-  }, [label, reloadPopularLabels, bumpDropdownData])
+  }, [label, reloadPopularLabels, bumpDropdownData, graphTagsForQuery])
 
   // Handle dropdown before open - reload popular labels if needed
   const handleDropdownBeforeOpen = useCallback(async () => {
@@ -237,7 +249,7 @@ const GraphLabels = () => {
       await reloadPopularLabels()
       bumpDropdownData()
     }
-  }, [reloadPopularLabels, bumpDropdownData])
+  }, [reloadPopularLabels, bumpDropdownData, graphTagsForQuery])
 
   return (
     <div className="flex items-center">
