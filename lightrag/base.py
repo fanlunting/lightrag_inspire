@@ -682,7 +682,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             List of matching labels sorted by relevance
         """
-
+    
+    @abstractmethod
+    async def get_all_graph_tags(self) -> list[str]:
+        """Get all unique graph tags from the graph.
+        Returns:
+            list[str]: List of unique graph tags
+        """
 
 class DocStatus(str, Enum):
     """Document processing status"""
