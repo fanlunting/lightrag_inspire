@@ -133,35 +133,29 @@ export function AsyncSelect<T>({
     }
   }, [value, options, getOptionValue])
 
-  // Effect for initial fetch
-  useEffect(() => {
-    const initializeOptions = async () => {
-      try {
-        setLoading(true)
-        setError(null)
-        // Always use empty query for initial load to show search history
-        const data = await fetcher('')
-        setOriginalOptions(data)
-        setOptions(data)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch options')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    if (!mounted) {
-      initializeOptions()
-    }
-  }, [mounted, fetcher])
-
+  // Combined effect for fetch and search
   useEffect(() => {
     const fetchOptions = async () => {
       try {
         setLoading(true)
         setError(null)
-        const data = await fetcher(debouncedSearchTerm)
-        setOriginalOptions(data)
+        
+        let data: T[] = []
+        
+        if (preload && debouncedSearchTerm) {
+            // Local filter mode when preloaded
+            data = originalOptions.filter((option) =>
+               filterFn ? filterFn(option, debouncedSearchTerm) : true
+            )
+        } else {
+            // Fetch from backend (including initial load when term is empty)
+            data = await fetcher(debouncedSearchTerm)
+        }
+
+        // Update state
+        if (!preload) {
+             setOriginalOptions(data)
+        }
         setOptions(data)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to fetch options')
@@ -170,23 +164,9 @@ export function AsyncSelect<T>({
       }
     }
 
-    if (!mounted) {
-      fetchOptions()
-    } else if (!preload) {
-      fetchOptions()
-    } else if (preload) {
-      if (debouncedSearchTerm) {
-        setOptions(
-          originalOptions.filter((option) =>
-            filterFn ? filterFn(option, debouncedSearchTerm) : true
-          )
-        )
-      } else {
-        setOptions(originalOptions)
-      }
-    }
+    fetchOptions()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher, debouncedSearchTerm, mounted, preload, filterFn])
+  }, [fetcher, debouncedSearchTerm, preload, filterFn])
 
   const handleSelect = useCallback(
     (currentValue: string) => {
