@@ -64,6 +64,7 @@ class Neo4JStorage(BaseGraphStorage):
             embedding_func=embedding_func,
         )
         self._driver = None
+        self._apoc_available: bool | None = None  # None = not checked yet, True/False = checked
 
     def _get_workspace_label(self) -> str:
         """Return workspace label (guaranteed non-empty during initialization)"""
@@ -248,6 +249,9 @@ class Neo4JStorage(BaseGraphStorage):
                     await self._create_fulltext_index(
                         self._driver, self._DATABASE, workspace_label
                     )
+                    
+                    # Check APOC plugin availability once during initialization
+                    await self._check_apoc_availability(database)
                     break
 
     async def _create_fulltext_index(
@@ -361,6 +365,40 @@ class Neo4JStorage(BaseGraphStorage):
                 logger.error(
                     f"[{self.workspace}] Failed to create or verify full-text index '{index_name}': {str(e)}"
                 )
+
+    async def _check_apoc_availability(self, database: str | None = None) -> None:
+        """
+        Check if APOC plugin is available in Neo4j.
+        This check is performed once during initialization to avoid repeated warnings.
+        """
+        if self._apoc_available is not None:
+            return  # Already checked
+        
+        try:
+            async with self._driver.session(database=database) as session:
+                # Try to call a simple APOC procedure to check availability
+                result = await session.run("CALL apoc.help('path') YIELD name LIMIT 1 RETURN count(*) as count")
+                record = await result.single()
+                if record and record.get("count", 0) > 0:
+                    self._apoc_available = True
+                    logger.debug(f"[{self.workspace}] APOC plugin is available")
+                else:
+                    self._apoc_available = False
+                    logger.info(
+                        f"[{self.workspace}] APOC plugin not available. "
+                        "Graph queries will use basic Cypher recursive search. "
+                        "To enable APOC for better performance, install the APOC plugin: "
+                        "https://neo4j.com/labs/apoc/"
+                    )
+        except Exception as e:
+            # If APOC check fails, assume it's not available
+            self._apoc_available = False
+            logger.info(
+                f"[{self.workspace}] APOC plugin not available: {str(e)}. "
+                "Graph queries will use basic Cypher recursive search. "
+                "To enable APOC for better performance, install the APOC plugin: "
+                "https://neo4j.com/labs/apoc/"
+            )
 
     async def finalize(self):
         """Close the Neo4j driver and release all resources"""
@@ -1145,6 +1183,17 @@ class Neo4JStorage(BaseGraphStorage):
         graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
         has_graph_tag_filter = len(graph_tags) > 0
         
+        # Check APOC availability if not checked yet (lazy check for backward compatibility)
+        if self._apoc_available is None:
+            await self._check_apoc_availability(self._DATABASE)
+        
+        # If APOC is not available and not a wildcard query, use fallback directly
+        if self._apoc_available is False and node_label != "*":
+            logger.debug(
+                f"[{self.workspace}] Using basic Cypher recursive search (APOC not available)"
+            )
+            return await self._robust_fallback(node_label, max_depth, max_nodes, graph_tags)
+        
         workspace_label = self._get_workspace_label()
         result = KnowledgeGraph()
         seen_nodes = set()
@@ -1384,11 +1433,21 @@ class Neo4JStorage(BaseGraphStorage):
             except neo4jExceptions.ClientError as e:
                 error_code = getattr(e, 'code', '')
                 if 'ProcedureNotFound' in str(e) or 'apoc' in str(e).lower():
-                    logger.warning(f"[{self.workspace}] APOC plugin not available: {str(e)}")
-                    if node_label != "*":
-                        logger.warning(
-                            f"[{self.workspace}] Neo4j: falling back to basic Cypher recursive search..."
+                    # Mark APOC as unavailable if not already marked
+                    if self._apoc_available is not False:
+                        self._apoc_available = False
+                        logger.info(
+                            f"[{self.workspace}] APOC plugin not available: {str(e)}. "
+                            "Graph queries will use basic Cypher recursive search. "
+                            "To enable APOC for better performance, install the APOC plugin: "
+                            "https://neo4j.com/labs/apoc/"
                         )
+                    else:
+                        logger.debug(
+                            f"[{self.workspace}] APOC plugin not available, using fallback"
+                        )
+                    
+                    if node_label != "*":
                         return await self._robust_fallback(node_label, max_depth, max_nodes, graph_tags)
                     else:
                         logger.warning(
