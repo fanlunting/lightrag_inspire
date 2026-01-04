@@ -17,6 +17,7 @@ from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
+from ..constants import GRAPH_FIELD_SEP
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -2052,3 +2053,36 @@ class Neo4JStorage(BaseGraphStorage):
                     f"[{self.workspace}] Error dropping Neo4j workspace '{workspace_label}' in database {self._DATABASE}: {e}"
                 )
                 return {"status": "error", "message": str(e)}
+
+    async def get_all_graph_tags(self) -> list[str]:
+        """Get all unique graph tags from the database efficiently."""
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            # Cypher query to get distinct graph_tag values
+            # We filter for nodes that have the property to avoid nulls
+            query = f"""
+            MATCH (n:`{workspace_label}`)
+            WHERE n.graph_tag IS NOT NULL
+            RETURN DISTINCT n.graph_tag as tag
+            """
+            result = await session.run(query)
+            tags = set()
+            async for record in result:
+                # Handle cases where graph_tag might be a list or comma-separated string
+                raw_tag = record["tag"]
+                if isinstance(raw_tag, str):
+                    for t in raw_tag.split(GRAPH_FIELD_SEP):
+                        if t.strip():
+                            tags.add(t.strip())
+                elif isinstance(raw_tag, list):
+                    for t in raw_tag:
+                        if str(t).strip():
+                            tags.add(str(t).strip())
+                else:
+                    if str(raw_tag).strip():
+                        tags.add(str(raw_tag).strip())
+            
+            await result.consume()
+            return sorted(list(tags))
