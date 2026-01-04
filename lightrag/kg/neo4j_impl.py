@@ -1164,8 +1164,13 @@ class Neo4JStorage(BaseGraphStorage):
                         MATCH (n  )
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS ntags
                         WHERE any(t IN $graph_tags WHERE t IN ntags)
                         RETURN count(n) AS total
@@ -1200,16 +1205,26 @@ class Neo4JStorage(BaseGraphStorage):
                         MATCH (n  )
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS ntags
                         WHERE any(t IN $graph_tags WHERE t IN ntags)
                         OPTIONAL MATCH (n)-[r]-(connected  )
                         WITH n, r, connected,
                              CASE
                                  WHEN connected IS NULL THEN ['__null__']
-                                 WHEN connected.graph_tag IS NULL OR toString(connected.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(connected.graph_tag), $sep)
+                                 WHEN connected.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(connected.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(connected.graph_tag) = 0 THEN ['default'] ELSE connected.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(connected.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(connected.graph_tag), $sep)
+                                 END
                              END AS ctags
                         WHERE r IS NULL OR any(t IN $graph_tags WHERE t IN ctags)
                         WITH n, COALESCE(count(r), 0) AS degree
@@ -1264,8 +1279,13 @@ class Neo4JStorage(BaseGraphStorage):
                         WHERE start.entity_id = $entity_id
                         WITH start,
                              CASE
-                                 WHEN start.graph_tag IS NULL OR toString(start.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(start.graph_tag), $sep)
+                                 WHEN start.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(start.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(start.graph_tag) = 0 THEN ['default'] ELSE start.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(start.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(start.graph_tag), $sep)
+                                 END
                              END AS stags
                         WHERE any(t IN $graph_tags WHERE t IN stags)
                         OPTIONAL MATCH (start)-[r]-()
@@ -1285,8 +1305,13 @@ class Neo4JStorage(BaseGraphStorage):
                         UNWIND nodes AS node
                         WITH node, relationships, total_nodes,
                              CASE
-                                 WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(node.graph_tag), $sep)
+                                 WHEN node.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(node.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(node.graph_tag), $sep)
+                                 END
                              END AS ntags
                         WHERE any(t IN $graph_tags WHERE t IN ntags)
                         WITH collect({{node: node}}) AS node_info, relationships, total_nodes
@@ -1519,16 +1544,26 @@ class Neo4JStorage(BaseGraphStorage):
             graph_tag_filter = """
             WITH n,
                  CASE
-                     WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(n.graph_tag), $sep)
+                     WHEN n.graph_tag IS NULL THEN ['default']
+                     WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                         THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                     ELSE CASE
+                         WHEN toString(n.graph_tag) = '' THEN ['default']
+                         ELSE split(toString(n.graph_tag), $sep)
+                     END
                  END AS ntags
             WHERE any(t IN $graph_tags WHERE t IN ntags)
             """
             graph_tag_filter_rel = """
             WITH r, b, edge_id, target_id,
                  CASE
-                     WHEN b.graph_tag IS NULL OR toString(b.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(b.graph_tag), $sep)
+                     WHEN b.graph_tag IS NULL THEN ['default']
+                     WHEN apoc.meta.type(b.graph_tag) STARTS WITH 'LIST'
+                         THEN CASE WHEN size(b.graph_tag) = 0 THEN ['default'] ELSE b.graph_tag END
+                     ELSE CASE
+                         WHEN toString(b.graph_tag) = '' THEN ['default']
+                         ELSE split(toString(b.graph_tag), $sep)
+                     END
                  END AS btags
             WHERE any(t IN $graph_tags WHERE t IN btags)
             WITH r, b, edge_id, target_id
@@ -1725,8 +1760,13 @@ class Neo4JStorage(BaseGraphStorage):
                 WHERE n.entity_id IS NOT NULL
                 WITH n,
                      CASE
-                         WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                         ELSE split(toString(n.graph_tag), $sep)
+                         WHEN n.graph_tag IS NULL THEN ['default']
+                         WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                             THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                         ELSE CASE
+                             WHEN toString(n.graph_tag) = '' THEN ['default']
+                             ELSE split(toString(n.graph_tag), $sep)
+                         END
                      END AS tags
                 WHERE any(t IN $graph_tags WHERE t IN tags)
                 RETURN DISTINCT n.entity_id AS label
@@ -1943,16 +1983,26 @@ class Neo4JStorage(BaseGraphStorage):
                     WHERE n.entity_id IS NOT NULL
                     WITH n,
                          CASE
-                             WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                             ELSE split(toString(n.graph_tag), $sep)
+                             WHEN n.graph_tag IS NULL THEN ['default']
+                             WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                             ELSE CASE
+                                 WHEN toString(n.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(n.graph_tag), $sep)
+                             END
                          END AS ntags
                     WHERE any(t IN $graph_tags WHERE t IN ntags)
                     OPTIONAL MATCH (n)-[r]-(m  )
                     WHERE m.entity_id IS NOT NULL
                     WITH n, r, m,
                          CASE
-                             WHEN m.graph_tag IS NULL OR toString(m.graph_tag) = '' THEN ['default']
-                             ELSE split(toString(m.graph_tag), $sep)
+                             WHEN m.graph_tag IS NULL THEN ['default']
+                             WHEN apoc.meta.type(m.graph_tag) STARTS WITH 'LIST'
+                                 THEN CASE WHEN size(m.graph_tag) = 0 THEN ['default'] ELSE m.graph_tag END
+                             ELSE CASE
+                                 WHEN toString(m.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(m.graph_tag), $sep)
+                             END
                          END AS mtags
                     WHERE r IS NULL OR any(t IN $graph_tags WHERE t IN mtags)
                     WITH n.entity_id AS label, count(r) AS degree
@@ -2017,8 +2067,13 @@ class Neo4JStorage(BaseGraphStorage):
             tag_filter_clause = """
             WITH node, score,
                  CASE
-                     WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(node.graph_tag), $sep)
+                     WHEN node.graph_tag IS NULL THEN ['default']
+                     WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                         THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
+                     ELSE CASE
+                         WHEN toString(node.graph_tag) = '' THEN ['default']
+                         ELSE split(toString(node.graph_tag), $sep)
+                     END
                  END AS tags
             WHERE any(t IN $graph_tags WHERE t IN tags)
             WITH node, score
@@ -2107,8 +2162,13 @@ class Neo4JStorage(BaseGraphStorage):
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS tags
                         WHERE any(t IN $graph_tags WHERE t IN tags)
                         WITH n.entity_id AS label
@@ -2157,8 +2217,13 @@ class Neo4JStorage(BaseGraphStorage):
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS tags
                         WHERE any(t IN $graph_tags WHERE t IN tags)
                         WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
