@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -18,6 +18,13 @@ const GraphLabels = () => {
   const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
+  
+  // State to control backend fetch
+  // Initialize to FALSE to prevent auto-fetch on mount when tags are persisted
+  const [backendFetchAllowed, setBackendFetchAllowed] = useState(false)
+  
+  // Ref to track if initial mount has happened to avoid clearing on first render if not needed
+  const isMounted = useRef(false);
 
   // Initialize search history on component mount
   useEffect(() => {
@@ -51,22 +58,57 @@ const GraphLabels = () => {
     }
   }, [dropdownRefreshTrigger])
 
-  // Force AsyncSelect to re-render when selectedGraphTags changes
+  // Handle selectedGraphTags changes
   useEffect(() => {
+    // Skip the first render
+    if (!isMounted.current) {
+        isMounted.current = true;
+        return;
+    }
+    
+    // When tags change:
+    // 1. Clear current label
+    useSettingsStore.getState().setQueryLabel('')
+    // 2. Disable backend fetch until user interacts
+    setBackendFetchAllowed(false)
+    // 3. Force re-render to reset component state (and clear internal cache of AsyncSelect)
     setSelectKey(prev => prev + 1)
   }, [selectedGraphTags])
 
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
       let results: string[] = [];
-      const hasTags = selectedGraphTags && selectedGraphTags.length > 0;
+      const isGlobalSelect = selectedGraphTags && selectedGraphTags.includes('*');
+      const hasSpecificTags = selectedGraphTags && selectedGraphTags.length > 0 && !isGlobalSelect;
+      
+      const hasTags = isGlobalSelect || hasSpecificTags;
 
       if (!query || query.trim() === '' || query.trim() === '*') {
         // Empty query:
         if (hasTags) {
-           // If tags are selected, always fetch from backend to ensure labels belong to tags
+           // If backend fetch is not allowed (e.g. after tag change but before user interaction), return empty
+           // BUT if it's the initial load (isMounted check might be tricky here, but we can rely on !query), 
+           // we might want to avoid auto-fetch too unless explicitly requested.
+           // However, if the user *just* loaded the page and has tags selected (persistence), 
+           // we probably SHOULD show something? Or maybe wait for interaction?
+           // The previous issue was *repeated* fetches. 
+           // Let's stick to: only fetch if backendFetchAllowed is true.
+           // For initial load, we might want to set backendFetchAllowed to false initially in state?
+           // Actually, on initial mount, if tags are present, we probably DO want to fetch once?
+           // The issue seen in logs is repeated calls.
+           
+           // If backend fetch is not allowed (e.g. after tag change but before user interaction), return empty
+           if (!backendFetchAllowed) {
+             // Return just '*' as a valid option even if we don't fetch backend data
+             // This ensures the dropdown isn't completely empty/loading forever if AsyncSelect expects something
+             return ['*'];
+           }
+
+           // If tags are selected (or *), fetch from backend
            try {
-             const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, selectedGraphTags)
+             // If *, pass undefined to fetch all popular labels. Otherwise pass selected tags.
+             const tagsToUse = isGlobalSelect ? undefined : selectedGraphTags;
+             const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, tagsToUse)
              results = popularLabels
            } catch (error) {
              console.error('Failed to fetch filtered popular labels:', error)
@@ -78,8 +120,10 @@ const GraphLabels = () => {
         }
       } else {
         // Non-empty query: call backend search API
+        // Always allow backend fetch if user is typing query (implied interaction)
         try {
-          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit, selectedGraphTags)
+          const tagsToUse = isGlobalSelect ? undefined : selectedGraphTags;
+          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit, tagsToUse)
           results = apiResults.length <= dropdownDisplayLimit
             ? apiResults
             : [...apiResults.slice(0, dropdownDisplayLimit), '...']
@@ -100,9 +144,17 @@ const GraphLabels = () => {
       const finalResults = ['*', ...results.filter(label => label !== '*')];
       return finalResults;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refreshTrigger, selectedGraphTags] // Intentionally added to trigger re-creation when data changes
+    [refreshTrigger, selectedGraphTags, backendFetchAllowed] // Intentionally added to trigger re-creation when data changes
   )
+  
+  const onBeforeOpen = useCallback(async () => {
+      // User clicked to open. Allow backend fetch if it was disabled.
+      if (!backendFetchAllowed) {
+          setBackendFetchAllowed(true);
+          // Trigger refresh to ensure fetchData is called again with new allowed state
+          setRefreshTrigger(prev => prev + 1);
+      }
+  }, [backendFetchAllowed]);
 
   return (
     <div className="flex items-center">
@@ -114,7 +166,7 @@ const GraphLabels = () => {
           searchInputClassName="max-h-8"
           triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
           fetcher={fetchData}
-          onBeforeOpen={undefined}
+          onBeforeOpen={onBeforeOpen}
           renderOption={(item) => (
             <div className="truncate" title={item}>
               {item}
