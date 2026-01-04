@@ -2056,14 +2056,15 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def get_all_graph_tags(self) -> list[str]:
         """Get all unique graph tags from the database efficiently."""
-        workspace_label = self._get_workspace_label()
+        # workspace_label = self._get_workspace_label()
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             # Cypher query to get distinct graph_tag values
-            # We filter for nodes that have the property to avoid nulls
-            query = f"""
-            MATCH (n:`{workspace_label}`)
+            # We use MATCH (n) instead of MATCH (n:Label) to allow discovering tags 
+            # even if the workspace label configuration doesn't match the database content.
+            query = """
+            MATCH (n)
             WHERE n.graph_tag IS NOT NULL
             RETURN DISTINCT n.graph_tag as tag
             """
