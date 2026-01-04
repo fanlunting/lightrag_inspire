@@ -306,7 +306,7 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 raise
 
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
         Get all existing node labels in the database
         Returns:
@@ -344,6 +344,9 @@ class MemgraphStorage(BaseGraphStorage):
                         result.consume()
                     )  # Ensure the result is consumed even on error
                 raise
+
+    # NOTE: Memgraph label listing/search currently ignore graph_tag filtering.
+    # The optional parameter is accepted for API compatibility.
 
     async def get_node_edges(
         self, source_node_id: str, graph_tag: str = "default"
@@ -1042,7 +1045,9 @@ class MemgraphStorage(BaseGraphStorage):
             await result.consume()
             return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
@@ -1087,7 +1092,9 @@ class MemgraphStorage(BaseGraphStorage):
                 await result.consume()
             return []
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Search labels with fuzzy matching
 
         Args:

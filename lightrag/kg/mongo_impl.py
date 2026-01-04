@@ -1119,7 +1119,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
         Get all existing node _id in the database
         Returns:
@@ -1618,7 +1618,9 @@ class MongoGraphStorage(BaseGraphStorage):
             edges.append(edge_dict)
         return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
@@ -1838,7 +1840,9 @@ class MongoGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Traceback: {traceback.format_exc()}")
             return []
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Search labels with progressive fallback strategy:
         1. Atlas text search (simple and fast)

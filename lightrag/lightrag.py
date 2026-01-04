@@ -1041,8 +1041,8 @@ class LightRAG:
                     f"Relation chunk_tracking migration completed: {total_migrated} records persisted"
                 )
 
-    async def get_graph_labels(self):
-        text = await self.chunk_entity_relation_graph.get_all_labels()
+    async def get_graph_labels(self, graph_tags: list[str] | None = None):
+        text = await self.chunk_entity_relation_graph.get_all_labels(graph_tags=graph_tags)
         return text
 
     async def get_knowledge_graph(

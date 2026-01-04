@@ -16,6 +16,7 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_graph_db_lock
 import pipmaster as pm
 
@@ -1590,13 +1591,15 @@ class Neo4JStorage(BaseGraphStorage):
         )
         return result
 
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
         Get all existing node labels in the database
         Returns:
             ["Person", "Company", ...]  # Alphabetically sorted label list
         """
         workspace_label = self._get_workspace_label()
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
@@ -1604,13 +1607,30 @@ class Neo4JStorage(BaseGraphStorage):
             # query = "CALL db.labels() YIELD label RETURN label"
 
             # Method 2: Query compatible with older versions
-            query = f"""
-            MATCH (n  )
-            WHERE n.entity_id IS NOT NULL
-            RETURN DISTINCT n.entity_id AS label
-            ORDER BY label
-            """
-            result = await session.run(query)
+            if has_graph_tag_filter:
+                query = f"""
+                MATCH (n  )
+                WHERE n.entity_id IS NOT NULL
+                WITH n,
+                     CASE
+                         WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                         ELSE split(toString(n.graph_tag), $sep)
+                     END AS tags
+                WHERE any(t IN $graph_tags WHERE t IN tags)
+                RETURN DISTINCT n.entity_id AS label
+                ORDER BY label
+                """
+                result = await session.run(
+                    query, graph_tags=graph_tags, sep=GRAPH_FIELD_SEP
+                )
+            else:
+                query = f"""
+                MATCH (n  )
+                WHERE n.entity_id IS NOT NULL
+                RETURN DISTINCT n.entity_id AS label
+                ORDER BY label
+                """
+                result = await session.run(query)
             labels = []
             try:
                 async for record in result:
@@ -1786,7 +1806,9 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
@@ -1796,21 +1818,53 @@ class Neo4JStorage(BaseGraphStorage):
             List of labels sorted by degree (highest first)
         """
         workspace_label = self._get_workspace_label()
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             result = None
             try:
-                query = f"""
-                MATCH (n  )
-                WHERE n.entity_id IS NOT NULL
-                OPTIONAL MATCH (n)-[r]-()
-                WITH n.entity_id AS label, count(r) AS degree
-                ORDER BY degree DESC, label ASC
-                LIMIT $limit
-                RETURN label
-                """
-                result = await session.run(query, limit=limit)
+                if has_graph_tag_filter:
+                    query = f"""
+                    MATCH (n  )
+                    WHERE n.entity_id IS NOT NULL
+                    WITH n,
+                         CASE
+                             WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                             ELSE split(toString(n.graph_tag), $sep)
+                         END AS ntags
+                    WHERE any(t IN $graph_tags WHERE t IN ntags)
+                    OPTIONAL MATCH (n)-[r]-(m  )
+                    WHERE m.entity_id IS NOT NULL
+                    WITH n, r, m,
+                         CASE
+                             WHEN m.graph_tag IS NULL OR toString(m.graph_tag) = '' THEN ['default']
+                             ELSE split(toString(m.graph_tag), $sep)
+                         END AS mtags
+                    WHERE r IS NULL OR any(t IN $graph_tags WHERE t IN mtags)
+                    WITH n.entity_id AS label, count(r) AS degree
+                    ORDER BY degree DESC, label ASC
+                    LIMIT $limit
+                    RETURN label
+                    """
+                    result = await session.run(
+                        query,
+                        limit=limit,
+                        graph_tags=graph_tags,
+                        sep=GRAPH_FIELD_SEP,
+                    )
+                else:
+                    query = f"""
+                    MATCH (n  )
+                    WHERE n.entity_id IS NOT NULL
+                    OPTIONAL MATCH (n)-[r]-()
+                    WITH n.entity_id AS label, count(r) AS degree
+                    ORDER BY degree DESC, label ASC
+                    LIMIT $limit
+                    RETURN label
+                    """
+                    result = await session.run(query, limit=limit)
                 labels = []
                 async for record in result:
                     labels.append(record["label"])
@@ -1828,7 +1882,9 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()
                 raise
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Search labels with fuzzy matching, using a full-text index for performance if available.
         Enhanced with Chinese text support using CJK analyzer.
@@ -1842,6 +1898,19 @@ class Neo4JStorage(BaseGraphStorage):
         query_lower = query_strip.lower()
         is_chinese = self._is_chinese_text(query_strip)
         index_name = "entity_id_fulltext_idx"
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
+        tag_filter_clause = ""
+        if has_graph_tag_filter:
+            tag_filter_clause = """
+            WITH node, score,
+                 CASE
+                     WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
+                     ELSE split(toString(node.graph_tag), $sep)
+                 END AS tags
+            WHERE any(t IN $graph_tags WHERE t IN tags)
+            WITH node, score
+            """
 
         # Attempt to use the full-text index first
         try:
@@ -1853,7 +1922,8 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node  
+                    WHERE node IS NOT NULL
+                    {tag_filter_clause}
                     WITH node.entity_id AS label, score
                     WITH label, score,
                          CASE
@@ -1872,7 +1942,8 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node  
+                    WHERE node IS NOT NULL
+                    {tag_filter_clause}
                     WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
                     WITH label, label_lower, score,
                          CASE
@@ -1894,6 +1965,8 @@ class Neo4JStorage(BaseGraphStorage):
                     query_lower=query_lower,
                     query_strip=query_strip,
                     limit=limit,
+                    graph_tags=graph_tags,
+                    sep=GRAPH_FIELD_SEP,
                 )
                 labels = [record["label"] async for record in result]
                 await result.consume()
@@ -1916,44 +1989,104 @@ class Neo4JStorage(BaseGraphStorage):
             ) as session:
                 if is_chinese:
                     # For Chinese text, use direct CONTAINS without case conversion
-                    cypher_query = f"""
-                    MATCH (n  )
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label
-                    WHERE label CONTAINS $query_strip
-                    WITH label,
-                         CASE
-                             WHEN label = $query_strip THEN 1000
-                             WHEN label STARTS WITH $query_strip THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_strip=query_strip, limit=limit
-                    )
+                    if has_graph_tag_filter:
+                        cypher_query = f"""
+                        MATCH (n  )
+                        WHERE n.entity_id IS NOT NULL
+                        WITH n,
+                             CASE
+                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(n.graph_tag), $sep)
+                             END AS tags
+                        WHERE any(t IN $graph_tags WHERE t IN tags)
+                        WITH n.entity_id AS label
+                        WHERE label CONTAINS $query_strip
+                        WITH label,
+                             CASE
+                                 WHEN label = $query_strip THEN 1000
+                                 WHEN label STARTS WITH $query_strip THEN 500
+                                 ELSE 100 - size(label)
+                             END AS score
+                        ORDER BY score DESC, label ASC
+                        LIMIT $limit
+                        RETURN label
+                        """
+                        result = await session.run(
+                            cypher_query,
+                            query_strip=query_strip,
+                            limit=limit,
+                            graph_tags=graph_tags,
+                            sep=GRAPH_FIELD_SEP,
+                        )
+                    else:
+                        cypher_query = f"""
+                        MATCH (n  )
+                        WHERE n.entity_id IS NOT NULL
+                        WITH n.entity_id AS label
+                        WHERE label CONTAINS $query_strip
+                        WITH label,
+                             CASE
+                                 WHEN label = $query_strip THEN 1000
+                                 WHEN label STARTS WITH $query_strip THEN 500
+                                 ELSE 100 - size(label)
+                             END AS score
+                        ORDER BY score DESC, label ASC
+                        LIMIT $limit
+                        RETURN label
+                        """
+                        result = await session.run(
+                            cypher_query, query_strip=query_strip, limit=limit
+                        )
                 else:
                     # For non-Chinese text, use the original fallback logic
-                    cypher_query = f"""
-                    MATCH (n  )
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
-                    WHERE label_lower CONTAINS $query_lower
-                    WITH label, label_lower,
-                         CASE
-                             WHEN label_lower = $query_lower THEN 1000
-                             WHEN label_lower STARTS WITH $query_lower THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_lower=query_lower, limit=limit
-                    )
+                    if has_graph_tag_filter:
+                        cypher_query = f"""
+                        MATCH (n  )
+                        WHERE n.entity_id IS NOT NULL
+                        WITH n,
+                             CASE
+                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(n.graph_tag), $sep)
+                             END AS tags
+                        WHERE any(t IN $graph_tags WHERE t IN tags)
+                        WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                        WHERE label_lower CONTAINS $query_lower
+                        WITH label, label_lower,
+                             CASE
+                                 WHEN label_lower = $query_lower THEN 1000
+                                 WHEN label_lower STARTS WITH $query_lower THEN 500
+                                 ELSE 100 - size(label)
+                             END AS score
+                        ORDER BY score DESC, label ASC
+                        LIMIT $limit
+                        RETURN label
+                        """
+                        result = await session.run(
+                            cypher_query,
+                            query_lower=query_lower,
+                            limit=limit,
+                            graph_tags=graph_tags,
+                            sep=GRAPH_FIELD_SEP,
+                        )
+                    else:
+                        cypher_query = f"""
+                        MATCH (n  )
+                        WHERE n.entity_id IS NOT NULL
+                        WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                        WHERE label_lower CONTAINS $query_lower
+                        WITH label, label_lower,
+                             CASE
+                                 WHEN label_lower = $query_lower THEN 1000
+                                 WHEN label_lower STARTS WITH $query_lower THEN 500
+                                 ELSE 100 - size(label)
+                             END AS score
+                        ORDER BY score DESC, label ASC
+                        LIMIT $limit
+                        RETURN label
+                        """
+                        result = await session.run(
+                            cypher_query, query_lower=query_lower, limit=limit
+                        )
 
                 labels = [record["label"] async for record in result]
                 await result.consume()

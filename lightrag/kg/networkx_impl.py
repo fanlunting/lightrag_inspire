@@ -205,7 +205,7 @@ class NetworkXStorage(BaseGraphStorage):
             if graph.has_edge(source, target):
                 graph.remove_edge(source, target)
 
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
         Get all node labels in the graph
         Returns:
@@ -219,7 +219,9 @@ class NetworkXStorage(BaseGraphStorage):
         # Return sorted list
         return sorted(list(labels))
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Get popular labels by node degree (most connected entities)
 
@@ -244,7 +246,9 @@ class NetworkXStorage(BaseGraphStorage):
 
         return popular_labels
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Search labels with fuzzy matching
 

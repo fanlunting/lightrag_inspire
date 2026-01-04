@@ -6,6 +6,7 @@ import { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
 import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/rendering'
 import { NodeBorderProgram } from '@sigma/node-border'
 import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
+import { Search } from 'lucide-react'
 
 import FocusOnNode from '@/components/graph/FocusOnNode'
 import LayoutsControl from '@/components/graph/LayoutsControl'
@@ -26,6 +27,7 @@ import GraphFusionControl from '@/components/graph/GraphFusionControl'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
+import Button from '@/components/ui/Button'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -124,7 +126,16 @@ const GraphViewer = () => {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
-  const selectedGraphTags = useSettingsStore.use.selectedGraphTags()
+  const appliedGraphTags = useSettingsStore.use.selectedGraphTags()
+  const appliedQueryLabel = useSettingsStore.use.queryLabel()
+
+  // Draft filters: user edits these, but we only fetch after clicking "Search"
+  const [draftGraphTags, setDraftGraphTags] = useState<string[]>(appliedGraphTags)
+  const [draftQueryLabel, setDraftQueryLabel] = useState<string>(appliedQueryLabel || '*')
+
+  // Keep drafts in sync if applied values change elsewhere
+  useEffect(() => setDraftGraphTags(appliedGraphTags), [appliedGraphTags])
+  useEffect(() => setDraftQueryLabel(appliedQueryLabel || '*'), [appliedQueryLabel])
 
   // Memoize sigma settings to prevent unnecessary re-creation
   const memoizedSigmaSettings = useMemo(() => {
@@ -195,15 +206,40 @@ const GraphViewer = () => {
   )
 
   const onGraphTagsChange = useCallback((tags: string[]) => {
-    useSettingsStore.getState().setSelectedGraphTags(tags)
+    // Draft-only update:
+    // - clear GraphLabels selection immediately
+    // - do NOT fetch until user clicks "Search"
+    setDraftGraphTags(tags)
+    setDraftQueryLabel('')
+
+    // Clear selection immediately (UI should not point to stale nodes)
+    useGraphStore.getState().clearSelection()
+  }, [])
+
+  const hasPendingSearch = useMemo(() => {
+    const a = appliedGraphTags
+    const b = draftGraphTags
+    const tagsEqual =
+      a.length === b.length && a.every((v, i) => v === b[i])
+
+    const normalizeLabel = (x: string) => (x || '').trim() || '*'
+    const labelEqual = normalizeLabel(appliedQueryLabel) === normalizeLabel(draftQueryLabel)
+
+    return !(tagsEqual && labelEqual)
+  }, [appliedGraphTags, draftGraphTags, appliedQueryLabel, draftQueryLabel])
+
+  const onSearchClick = useCallback(() => {
+    // Apply drafts into global settings, then trigger graph re-fetch
+    const normalizedLabel = (draftQueryLabel || '').trim() || '*'
+    useSettingsStore.getState().setSelectedGraphTags(draftGraphTags)
+    useSettingsStore.getState().setQueryLabel(normalizedLabel)
+
     const graphState = useGraphStore.getState()
-    // Clear selection to avoid pointing to nodes outside the filtered graph
     graphState.clearSelection()
-    // Force graph data refresh
     graphState.setGraphDataFetchAttempted(false)
     graphState.setLastSuccessfulQueryLabel('')
     graphState.incrementGraphDataVersion()
-  }, [])
+  }, [draftGraphTags, draftQueryLabel])
 
   // Always render SigmaContainer but control its visibility with CSS
   return (
@@ -221,12 +257,16 @@ const GraphViewer = () => {
 
         <div className="absolute top-2 left-2 flex flex-wrap items-start gap-2">
           <div className="order-2">
-            <GraphLabels />
+            <GraphLabels
+              value={draftQueryLabel}
+              onChange={setDraftQueryLabel}
+              graphTags={draftGraphTags}
+            />
           </div>
           {showNodeSearchBar && !isThemeSwitching && (
             <>
               <div className="order-1">
-                <GraphTagFilter value={selectedGraphTags} onChange={onGraphTagsChange} />
+                <GraphTagFilter value={draftGraphTags} onChange={onGraphTagsChange} />
               </div>
               <div className="order-3 min-w-[220px]">
                 <GraphSearch
@@ -234,6 +274,19 @@ const GraphViewer = () => {
                   onFocus={onSearchFocus}
                   onChange={onSearchSelect}
                 />
+              </div>
+              <div className="order-4">
+                <Button
+                  variant="outline"
+                  className="bg-background/60 h-8 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:opacity-100"
+                  onClick={onSearchClick}
+                  disabled={!hasPendingSearch}
+                  tooltip="Search"
+                  side="bottom"
+                >
+                  <Search className="h-4 w-4 mr-2" />
+                  搜索
+                </Button>
               </div>
             </>
           )}
