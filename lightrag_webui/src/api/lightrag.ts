@@ -763,8 +763,13 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_configured: true,
       auth_mode: 'enabled'
     };
-  } catch (error) {
-    // If the request fails, assume authentication is configured
+  } catch (error: any) {
+    // If it's a 401 error, rethrow it so the interceptor can handle navigation
+    if (error?.response?.status === 401) {
+      throw error;
+    }
+    
+    // For other errors (network, timeout, etc.), log and return default
     console.error('Failed to get auth status:', errorMessage(error));
     return {
       auth_configured: true,
