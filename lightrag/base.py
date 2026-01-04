@@ -661,23 +661,29 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
+            graph_tags: List of graph tags to filter nodes. If None, all nodes are considered.
 
         Returns:
             List of labels sorted by degree (highest first)
         """
 
     @abstractmethod
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Search labels with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
+            graph_tags: List of graph tags to filter nodes. If None, all nodes are considered.
 
         Returns:
             List of matching labels sorted by relevance

@@ -1416,16 +1416,18 @@ class Neo4JStorage(BaseGraphStorage):
                         if edge_id not in seen_edges:
                             start = rel.start_node
                             end = rel.end_node
-                            result.edges.append(
-                                KnowledgeGraphEdge(
-                                    id=f"{edge_id}",
-                                    type=rel.type,
-                                    source=f"{start.id}",
-                                    target=f"{end.id}",
-                                    properties=dict(rel),
+                            # Only include edges where both source and target nodes are present in the filtered graph
+                            if start.id in seen_nodes and end.id in seen_nodes:
+                                result.edges.append(
+                                    KnowledgeGraphEdge(
+                                        id=f"{edge_id}",
+                                        type=rel.type,
+                                        source=f"{start.id}",
+                                        target=f"{end.id}",
+                                        properties=dict(rel),
+                                    )
                                 )
-                            )
-                            seen_edges.add(edge_id)
+                                seen_edges.add(edge_id)
 
                     logger.info(
                         f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
@@ -1846,16 +1848,32 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities)
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
+        """
+        Get popular labels by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
+            graph_tags: List of graph tags to filter nodes
 
         Returns:
             List of labels sorted by degree (highest first)
         """
         workspace_label = self._get_workspace_label()
+        
+        # Build graph_tag filter condition
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        if graph_tags:
+            if len(graph_tags) == 1:
+                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+            else:
+                graph_tags_str = "', '".join(graph_tags)
+                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
+        else:
+            graph_tag_filter = "true"
+
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
@@ -1863,7 +1881,7 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 query = f"""
                 MATCH (n)
-                WHERE n.entity_id IS NOT NULL
+                WHERE n.entity_id IS NOT NULL AND {graph_tag_filter}
                 OPTIONAL MATCH (n)-[r]-()
                 WITH n.entity_id AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
@@ -1877,7 +1895,7 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
+                    f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit}, tags: {graph_tags})"
                 )
                 return labels
             except Exception as e:
@@ -1888,7 +1906,9 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()
                 raise
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """
         Search labels with fuzzy matching, using a full-text index for performance if available.
         Enhanced with Chinese text support using CJK analyzer.
@@ -1896,7 +1916,28 @@ class Neo4JStorage(BaseGraphStorage):
         """
         workspace_label = self._get_workspace_label()
         query_strip = query.strip()
-        if not query_strip:
+        
+        # Build graph_tag filter condition for fallback query
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_tags = len(graph_tags) > 0
+        
+        if has_tags:
+            if len(graph_tags) == 1:
+                # Use parameter for single tag to be safe
+                graph_tag_filter = "node.graph_tag = $graph_tag_single"
+                graph_tag_filter_n = "n.graph_tag = $graph_tag_single"
+                tag_params = {"graph_tag_single": graph_tags[0]}
+            else:
+                # Use IN clause for multiple tags
+                graph_tag_filter = "node.graph_tag IN $graph_tags_list"
+                graph_tag_filter_n = "n.graph_tag IN $graph_tags_list"
+                tag_params = {"graph_tags_list": graph_tags}
+        else:
+            graph_tag_filter = "true"
+            graph_tag_filter_n = "true"
+            tag_params = {}
+
+        if not query_strip and not has_tags:
             return []
 
         query_lower = query_strip.lower()
@@ -1913,7 +1954,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node
+                    WHERE node AND {graph_tag_filter}
                     WITH node.entity_id AS label, score
                     WITH label, score,
                          CASE
@@ -1932,7 +1973,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node
+                    WHERE node AND {graph_tag_filter}
                     WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
                     WITH label, label_lower, score,
                          CASE
@@ -1947,28 +1988,35 @@ class Neo4JStorage(BaseGraphStorage):
                     """
                     search_query = f"{query_strip}*"
 
-                result = await session.run(
-                    cypher_query,
-                    index_name=index_name,
-                    search_query=search_query,
-                    query_lower=query_lower,
-                    query_strip=query_strip,
-                    limit=limit,
-                )
+                # If query is empty but tags are provided, we can't use fulltext index efficiently 
+                # (it requires a query string). Fallback to standard match.
+                if not query_strip and has_tags:
+                     raise Exception("Empty query with tags - use fallback")
+
+                params = {
+                    "index_name": index_name,
+                    "search_query": search_query,
+                    "query_lower": query_lower,
+                    "query_strip": query_strip,
+                    "limit": limit,
+                    **tag_params
+                }
+
+                result = await session.run(cypher_query, **params)
                 labels = [record["label"] async for record in result]
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit}, tags: {graph_tags})"
                 )
                 return labels
 
         except Exception as e:
             # If the full-text search fails, fall back to CONTAINS search
-            logger.warning(
-                f"[{self.workspace}] Full-text search failed with error: {str(e)}. "
-                "Falling back to slower, non-indexed search."
-            )
+            # logger.warning(
+            #     f"[{self.workspace}] Full-text search failed/skipped: {str(e)}. "
+            #     "Falling back to standard search."
+            # )
 
             # Enhanced fallback implementation
             async with self._driver.session(
@@ -1978,11 +2026,12 @@ class Neo4JStorage(BaseGraphStorage):
                     # For Chinese text, use direct CONTAINS without case conversion
                     cypher_query = f"""
                     MATCH (n)
-                    WHERE n.entity_id IS NOT NULL
+                    WHERE n.entity_id IS NOT NULL AND {graph_tag_filter_n}
                     WITH n.entity_id AS label
-                    WHERE label CONTAINS $query_strip
+                    WHERE ($query_strip = '' OR label CONTAINS $query_strip)
                     WITH label,
                          CASE
+                             WHEN $query_strip = '' THEN 1
                              WHEN label = $query_strip THEN 1000
                              WHEN label STARTS WITH $query_strip THEN 500
                              ELSE 100 - size(label)
@@ -1991,18 +2040,18 @@ class Neo4JStorage(BaseGraphStorage):
                     LIMIT $limit
                     RETURN label
                     """
-                    result = await session.run(
-                        cypher_query, query_strip=query_strip, limit=limit
-                    )
+                    params = {"query_strip": query_strip, "limit": limit, **tag_params}
+                    result = await session.run(cypher_query, **params)
                 else:
                     # For non-Chinese text, use the original fallback logic
                     cypher_query = f"""
                     MATCH (n)
-                    WHERE n.entity_id IS NOT NULL
+                    WHERE n.entity_id IS NOT NULL AND {graph_tag_filter_n}
                     WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
-                    WHERE label_lower CONTAINS $query_lower
+                    WHERE ($query_lower = '' OR label_lower CONTAINS $query_lower)
                     WITH label, label_lower,
                          CASE
+                             WHEN $query_lower = '' THEN 1
                              WHEN label_lower = $query_lower THEN 1000
                              WHEN label_lower STARTS WITH $query_lower THEN 500
                              ELSE 100 - size(label)
@@ -2011,14 +2060,13 @@ class Neo4JStorage(BaseGraphStorage):
                     LIMIT $limit
                     RETURN label
                     """
-                    result = await session.run(
-                        cypher_query, query_lower=query_lower, limit=limit
-                    )
+                    params = {"query_lower": query_lower, "limit": limit, **tag_params}
+                    result = await session.run(cypher_query, **params)
 
                 labels = [record["label"] async for record in result]
                 await result.consume()
                 logger.debug(
-                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit}, tags: {graph_tags})"
                 )
                 return labels
 
