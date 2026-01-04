@@ -763,9 +763,21 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_configured: true,
       auth_mode: 'enabled'
     };
-  } catch (error) {
-    // If the request fails, assume authentication is configured
-    console.error('Failed to get auth status:', errorMessage(error));
+  } catch (error: any) {
+    // Check if it's a 401 authentication error
+    const isAuthError = error?.response?.status === 401 || 
+                       error?.message?.includes('401') ||
+                       error?.message?.includes('Authentication required');
+    
+    if (isAuthError) {
+      // For 401 errors, re-throw to let the caller handle it
+      console.error('Authentication failed for auth-status:', errorMessage(error));
+      throw error;
+    }
+    
+    // For other errors (network, timeout, etc.), assume authentication is configured
+    // This allows the app to continue functioning even if the auth-status endpoint is unreachable
+    console.error('Failed to get auth status (non-auth error):', errorMessage(error));
     return {
       auth_configured: true,
       auth_mode: 'enabled'
