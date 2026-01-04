@@ -5,6 +5,7 @@ from typing import final
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
+from lightrag.constants import GRAPH_FIELD_SEP
 import networkx as nx
 from .shared_storage import (
     get_storage_lock,
@@ -299,6 +300,27 @@ class NetworkXStorage(BaseGraphStorage):
         )
 
         return search_results
+
+    async def get_all_graph_tags(self) -> list[str]:
+        """Get all unique graph tags from the graph."""
+        graph = await self._get_graph()
+        tags = set()
+        for _, data in graph.nodes(data=True):
+            raw_tag = data.get("graph_tag")
+            if raw_tag:
+                # Handle potential list or separated string (similar to neo4j logic)
+                if isinstance(raw_tag, str):
+                    for t in raw_tag.split(GRAPH_FIELD_SEP):
+                        if t.strip():
+                            tags.add(t.strip())
+                elif isinstance(raw_tag, list):
+                    for t in raw_tag:
+                        if str(t).strip():
+                            tags.add(str(t).strip())
+                else:
+                    if str(raw_tag).strip():
+                        tags.add(str(raw_tag).strip())
+        return sorted(list(tags))
 
     async def get_knowledge_graph(
         self,
