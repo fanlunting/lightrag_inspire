@@ -38,7 +38,7 @@ const GraphTagFilter = ({ value, onChange, className }: Props) => {
     try {
       const tags = await getGraphTags(query || '', 300)
       // keep stable ordering; backend already sorts, but enforce uniqueness
-      setOptions(Array.from(new Set(tags)))
+      setOptions(['*', ...Array.from(new Set(tags))])
     } finally {
       setLoading(false)
     }
@@ -51,9 +51,17 @@ const GraphTagFilter = ({ value, onChange, className }: Props) => {
 
   const toggleTag = useCallback(
     (tag: string) => {
-      const next = selected.includes(tag)
+      if (tag === '*') {
+        onChange(['*'])
+        return
+      }
+      let next = selected.includes(tag)
         ? selected.filter((t) => t !== tag)
         : normalizeTags([...selected, tag])
+      
+      if (next.includes('*')) {
+        next = next.filter(t => t !== '*')
+      }
       onChange(next)
     },
     [onChange, selected]
@@ -64,9 +72,10 @@ const GraphTagFilter = ({ value, onChange, className }: Props) => {
   }, [onChange])
 
   const buttonLabel = useMemo(() => {
+    if (selected.includes('*')) return t('graphPanel.graphTagFilter.allTags') || 'All Tags'
     if (selected.length === 0) return t('graphPanel.graphTagFilter.placeholder')
     return t('graphPanel.graphTagFilter.selectedCount', { count: selected.length })
-  }, [selected.length, t])
+  }, [selected, t])
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
