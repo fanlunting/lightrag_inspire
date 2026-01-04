@@ -195,7 +195,17 @@ const GraphViewer = () => {
   )
 
   const onGraphTagsChange = useCallback((tags: string[]) => {
-    useSettingsStore.getState().setSelectedGraphTags(tags)
+    const settingsState = useSettingsStore.getState()
+    const previousTags = settingsState.selectedGraphTags
+    
+    // Update graph tags
+    settingsState.setSelectedGraphTags(tags)
+    
+    // If graph tags changed, clear the query label to reset GraphLabels
+    if (JSON.stringify(previousTags.sort()) !== JSON.stringify(tags.sort())) {
+      settingsState.setQueryLabel('*')
+    }
+    
     const graphState = useGraphStore.getState()
     // Clear selection to avoid pointing to nodes outside the filtered graph
     graphState.clearSelection()

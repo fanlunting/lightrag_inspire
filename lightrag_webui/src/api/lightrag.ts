@@ -372,13 +372,30 @@ export const getGraphLabels = async (): Promise<string[]> => {
   return response.data
 }
 
-export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
+export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit, graphTags?: string[]): Promise<string[]> => {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (graphTags && graphTags.length > 0) {
+    for (const tag of graphTags) {
+      const trimmed = tag.trim()
+      if (trimmed) params.append('graph_tags', trimmed)
+    }
+  }
+  const response = await axiosInstance.get(`/graph/label/popular?${params.toString()}`)
   return response.data
 }
 
-export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit, graphTags?: string[]): Promise<string[]> => {
+  const params = new URLSearchParams()
+  params.set('q', query)
+  params.set('limit', String(limit))
+  if (graphTags && graphTags.length > 0) {
+    for (const tag of graphTags) {
+      const trimmed = tag.trim()
+      if (trimmed) params.append('graph_tags', trimmed)
+    }
+  }
+  const response = await axiosInstance.get(`/graph/label/search?${params.toString()}`)
   return response.data
 }
 

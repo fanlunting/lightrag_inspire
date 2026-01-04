@@ -1786,16 +1786,34 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(self, limit: int = 300, graph_tags: list[str] | None = None) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
+            graph_tags: Optional list of graph tags to filter nodes.
+                - None / [] means no filtering (search across all graph_tag values)
+                - Otherwise, only nodes with matching graph_tag are considered.
 
         Returns:
             List of labels sorted by degree (highest first)
         """
         workspace_label = self._get_workspace_label()
+        
+        # Normalize graph_tags (treat None / [] as "no filtering")
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
+        
+        # Build graph_tag filter condition
+        if has_graph_tag_filter:
+            if len(graph_tags) == 1:
+                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
+            else:
+                graph_tags_str = "', '".join(graph_tags)
+                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
+        else:
+            graph_tag_filter = "true"
+        
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
@@ -1803,7 +1821,7 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 query = f"""
                 MATCH (n  )
-                WHERE n.entity_id IS NOT NULL
+                WHERE n.entity_id IS NOT NULL AND {graph_tag_filter}
                 OPTIONAL MATCH (n)-[r]-()
                 WITH n.entity_id AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
@@ -1817,7 +1835,7 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
+                    f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit}, graph_tags: {graph_tags})"
                 )
                 return labels
             except Exception as e:
@@ -1828,16 +1846,40 @@ class Neo4JStorage(BaseGraphStorage):
                     await result.consume()
                 raise
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(self, query: str, limit: int = 50, graph_tags: list[str] | None = None) -> list[str]:
         """
         Search labels with fuzzy matching, using a full-text index for performance if available.
         Enhanced with Chinese text support using CJK analyzer.
         Falls back to a slower CONTAINS search if the index is not available or fails.
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+            graph_tags: Optional list of graph tags to filter nodes.
+                - None / [] means no filtering (search across all graph_tag values)
+                - Otherwise, only nodes with matching graph_tag are considered.
         """
         workspace_label = self._get_workspace_label()
         query_strip = query.strip()
         if not query_strip:
             return []
+
+        # Normalize graph_tags (treat None / [] as "no filtering")
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
+        
+        # Build graph_tag filter condition
+        if has_graph_tag_filter:
+            if len(graph_tags) == 1:
+                graph_tag_filter = f"node.graph_tag = '{graph_tags[0]}'"
+                graph_tag_filter_fallback = f"n.graph_tag = '{graph_tags[0]}'"
+            else:
+                graph_tags_str = "', '".join(graph_tags)
+                graph_tag_filter = f"node.graph_tag IN ['{graph_tags_str}']"
+                graph_tag_filter_fallback = f"n.graph_tag IN ['{graph_tags_str}']"
+        else:
+            graph_tag_filter = "true"
+            graph_tag_filter_fallback = "true"
 
         query_lower = query_strip.lower()
         is_chinese = self._is_chinese_text(query_strip)
@@ -1853,7 +1895,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node  
+                    WHERE node AND {graph_tag_filter}
                     WITH node.entity_id AS label, score
                     WITH label, score,
                          CASE
@@ -1872,7 +1914,7 @@ class Neo4JStorage(BaseGraphStorage):
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
-                    WHERE node  
+                    WHERE node AND {graph_tag_filter}
                     WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
                     WITH label, label_lower, score,
                          CASE
@@ -1899,7 +1941,7 @@ class Neo4JStorage(BaseGraphStorage):
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit}, graph_tags: {graph_tags})"
                 )
                 return labels
 
@@ -1918,7 +1960,7 @@ class Neo4JStorage(BaseGraphStorage):
                     # For Chinese text, use direct CONTAINS without case conversion
                     cypher_query = f"""
                     MATCH (n  )
-                    WHERE n.entity_id IS NOT NULL
+                    WHERE n.entity_id IS NOT NULL AND {graph_tag_filter_fallback}
                     WITH n.entity_id AS label
                     WHERE label CONTAINS $query_strip
                     WITH label,
@@ -1938,7 +1980,7 @@ class Neo4JStorage(BaseGraphStorage):
                     # For non-Chinese text, use the original fallback logic
                     cypher_query = f"""
                     MATCH (n  )
-                    WHERE n.entity_id IS NOT NULL
+                    WHERE n.entity_id IS NOT NULL AND {graph_tag_filter_fallback}
                     WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
                     WHERE label_lower CONTAINS $query_lower
                     WITH label, label_lower,
@@ -1958,7 +2000,7 @@ class Neo4JStorage(BaseGraphStorage):
                 labels = [record["label"] async for record in result]
                 await result.consume()
                 logger.debug(
-                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit}, graph_tags: {graph_tags})"
                 )
                 return labels
 
