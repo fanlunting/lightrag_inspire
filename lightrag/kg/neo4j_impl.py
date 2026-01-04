@@ -1416,16 +1416,18 @@ class Neo4JStorage(BaseGraphStorage):
                         if edge_id not in seen_edges:
                             start = rel.start_node
                             end = rel.end_node
-                            result.edges.append(
-                                KnowledgeGraphEdge(
-                                    id=f"{edge_id}",
-                                    type=rel.type,
-                                    source=f"{start.id}",
-                                    target=f"{end.id}",
-                                    properties=dict(rel),
+                            # Only include edges where both source and target nodes are present in the filtered graph
+                            if start.id in seen_nodes and end.id in seen_nodes:
+                                result.edges.append(
+                                    KnowledgeGraphEdge(
+                                        id=f"{edge_id}",
+                                        type=rel.type,
+                                        source=f"{start.id}",
+                                        target=f"{end.id}",
+                                        properties=dict(rel),
+                                    )
                                 )
-                            )
-                            seen_edges.add(edge_id)
+                                seen_edges.add(edge_id)
 
                     logger.info(
                         f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
