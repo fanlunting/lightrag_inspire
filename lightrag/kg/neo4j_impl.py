@@ -1539,48 +1539,44 @@ class Neo4JStorage(BaseGraphStorage):
         visited_edges = set()
         visited_edge_pairs = set()
 
-        # Build graph_tag filter condition
+        # Build graph_tag filter condition.
+        # IMPORTANT: This fallback path is used when APOC is unavailable, so do NOT rely on any apoc.* procedures.
         if has_graph_tag_filter:
             graph_tag_filter = """
             WITH n,
                  CASE
-                     WHEN n.graph_tag IS NULL THEN ['default']
-                     WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
-                         THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
-                     ELSE CASE
-                         WHEN toString(n.graph_tag) = '' THEN ['default']
-                         ELSE split(toString(n.graph_tag), $sep)
-                     END
+                     WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                     ELSE split(toString(n.graph_tag), $sep)
                  END AS ntags
             WHERE any(t IN $graph_tags WHERE t IN ntags)
             """
             graph_tag_filter_rel = """
             WITH r, b, edge_id, target_id,
                  CASE
-                     WHEN b.graph_tag IS NULL THEN ['default']
-                     WHEN apoc.meta.type(b.graph_tag) STARTS WITH 'LIST'
-                         THEN CASE WHEN size(b.graph_tag) = 0 THEN ['default'] ELSE b.graph_tag END
-                     ELSE CASE
-                         WHEN toString(b.graph_tag) = '' THEN ['default']
-                         ELSE split(toString(b.graph_tag), $sep)
-                     END
+                     WHEN b.graph_tag IS NULL OR toString(b.graph_tag) = '' THEN ['default']
+                     ELSE split(toString(b.graph_tag), $sep)
                  END AS btags
             WHERE any(t IN $graph_tags WHERE t IN btags)
             WITH r, b, edge_id, target_id
             """
         else:
-            graph_tag_filter = "true"
-            graph_tag_filter_rel = "true"
+            graph_tag_filter = ""
+            graph_tag_filter_rel = ""
 
         # Get the starting node's data
         workspace_label = self._get_workspace_label()
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            # If multiple nodes share the same entity_id, pick a deterministic start node by degree.
             if has_graph_tag_filter:
                 query = f"""
                 MATCH (n   {{entity_id: $entity_id}})
                 {graph_tag_filter}
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS degree
+                ORDER BY degree DESC
+                LIMIT 1
                 RETURN id(n) as node_id, n
                 """
                 node_result = await session.run(
@@ -1592,6 +1588,10 @@ class Neo4JStorage(BaseGraphStorage):
             else:
                 query = f"""
                 MATCH (n   {{entity_id: $entity_id}})
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS degree
+                ORDER BY degree DESC
+                LIMIT 1
                 RETURN id(n) as node_id, n
                 """
                 node_result = await session.run(query, entity_id=node_label)
@@ -1601,8 +1601,9 @@ class Neo4JStorage(BaseGraphStorage):
                     return result
 
                 # Create initial KnowledgeGraphNode
+                # Use Neo4j internal node id as stable unique id (align with APOC path output).
                 start_node = KnowledgeGraphNode(
-                    id=f"{node_record['n'].get('entity_id')}",
+                    id=str(node_record["node_id"]),
                     labels=[node_record["n"].get("entity_id")],
                     properties=dict(node_record["n"]._properties),
                 )
@@ -1651,7 +1652,9 @@ class Neo4JStorage(BaseGraphStorage):
             ) as session:
                 workspace_label = self._get_workspace_label()
                 query = f"""
-                MATCH (a   {{entity_id: $entity_id}})-[r]-(b  )
+                MATCH (a  )
+                WHERE id(a) = $node_id
+                MATCH (a)-[r]-(b  )
                 WITH r, b, id(r) as edge_id, id(b) as target_id
                 {graph_tag_filter_rel if has_graph_tag_filter else ""}
                 RETURN r, b, edge_id, target_id
@@ -1659,12 +1662,12 @@ class Neo4JStorage(BaseGraphStorage):
                 if has_graph_tag_filter:
                     results = await session.run(
                         query,
-                        entity_id=current_node.id,
+                        node_id=int(current_node.id),
                         graph_tags=graph_tags,
                         sep=GRAPH_FIELD_SEP,
                     )
                 else:
-                    results = await session.run(query, entity_id=current_node.id)
+                    results = await session.run(query, node_id=int(current_node.id))
 
                 # Get all records and release database connection
                 records = await results.fetch(1000)  # Max neighbor nodes we can handle
@@ -1682,7 +1685,7 @@ class Neo4JStorage(BaseGraphStorage):
                         if target_id:  # Only process if target node has entity_id
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
-                                id=f"{target_id}",
+                                id=str(record["target_id"]),
                                 labels=[target_id],
                                 properties=dict(b_node._properties),
                             )
@@ -1691,13 +1694,13 @@ class Neo4JStorage(BaseGraphStorage):
                             target_edge = KnowledgeGraphEdge(
                                 id=f"{edge_id}",
                                 type=rel.type,
-                                source=f"{current_node.id}",
-                                target=f"{target_id}",
+                                source=str(current_node.id),
+                                target=str(record["target_id"]),
                                 properties=dict(rel),
                             )
 
                             # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
-                            sorted_pair = tuple(sorted([current_node.id, target_id]))
+                            sorted_pair = tuple(sorted([str(current_node.id), str(record["target_id"])]))
 
                             # Check if the same edge already exists (considering undirectedness)
                             if sorted_pair not in visited_edge_pairs:
