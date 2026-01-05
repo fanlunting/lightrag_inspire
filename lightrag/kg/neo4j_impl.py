@@ -1151,30 +1151,43 @@ class Neo4JStorage(BaseGraphStorage):
         seen_nodes = set()
         seen_edges = set()
 
-        # Build graph_tag filter condition for Cypher queries
-        if has_graph_tag_filter:
-            if len(graph_tags) == 1:
-                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
-            else:
-                graph_tags_str = "', '".join(graph_tags)
-                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
-        else:
-            graph_tag_filter = "true"
-
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             try:
                 if node_label == "*":
                     # First check total node count to determine if graph is truncated
-                    count_query = (
-                        f"MATCH (n  ) "
-                        f"WHERE {graph_tag_filter} "
-                        f"RETURN count(n) as total"
-                    )
+                    # IMPORTANT: graph_tag may contain multiple tags separated by GRAPH_FIELD_SEP.
+                    # We treat a node as matching if ANY selected tag is present in the split list.
+                    if has_graph_tag_filter:
+                        count_query = f"""
+                        MATCH (n  )
+                        WITH n,
+                             CASE
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
+                             END AS ntags
+                        WHERE any(t IN $graph_tags WHERE t IN ntags)
+                        RETURN count(n) AS total
+                        """
+                    else:
+                        count_query = f"""
+                        MATCH (n  )
+                        RETURN count(n) AS total
+                        """
                     count_result = None
                     try:
-                        count_result = await session.run(count_query)
+                        if has_graph_tag_filter:
+                            count_result = await session.run(
+                                count_query, graph_tags=graph_tags, sep=GRAPH_FIELD_SEP
+                            )
+                        else:
+                            count_result = await session.run(count_query)
                         count_record = await count_result.single()
 
                         if count_record and count_record["total"] > max_nodes:
@@ -1188,101 +1201,157 @@ class Neo4JStorage(BaseGraphStorage):
 
                     # Run main query to get nodes with highest degree
                     if has_graph_tag_filter:
-                        graph_tag_list = "[" + ", ".join([f"'{t}'" for t in graph_tags]) + "]"
-                        connected_filter_clause = f"WHERE connected.graph_tag IN {graph_tag_list}"
-                        kept_filter_clause = f"AND a.graph_tag IN {graph_tag_list} AND b.graph_tag IN {graph_tag_list}"
+                        main_query = f"""
+                        MATCH (n  )
+                        WITH n,
+                             CASE
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
+                             END AS ntags
+                        WHERE any(t IN $graph_tags WHERE t IN ntags)
+                        OPTIONAL MATCH (n)-[r]-(connected  )
+                        WITH n, r, connected,
+                             CASE
+                                 WHEN connected IS NULL THEN ['__null__']
+                                 WHEN connected.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(connected.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(connected.graph_tag) = 0 THEN ['default'] ELSE connected.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(connected.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(connected.graph_tag), $sep)
+                                 END
+                             END AS ctags
+                        WHERE r IS NULL OR any(t IN $graph_tags WHERE t IN ctags)
+                        WITH n, COALESCE(count(r), 0) AS degree
+                        ORDER BY degree DESC
+                        LIMIT $max_nodes
+                        WITH collect({{node: n}}) AS filtered_nodes
+                        UNWIND filtered_nodes AS node_info
+                        WITH collect(node_info.node) AS kept_nodes, filtered_nodes
+                        OPTIONAL MATCH (a  )-[r]-(b  )
+                        WHERE a IN kept_nodes AND b IN kept_nodes
+                        RETURN filtered_nodes AS node_info,
+                               collect(DISTINCT r) AS relationships
+                        """
                     else:
-                        connected_filter_clause = ""
-                        kept_filter_clause = ""
-
-                    main_query = f"""
-                    MATCH (n  )
-                    WHERE {graph_tag_filter}
-                    OPTIONAL MATCH (n)-[r]-(connected  )
-                    {connected_filter_clause}
-                    WITH n, COALESCE(count(r), 0) AS degree
-                    ORDER BY degree DESC
-                    LIMIT $max_nodes
-                    WITH collect({{node: n}}) AS filtered_nodes
-                    UNWIND filtered_nodes AS node_info
-                    WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    OPTIONAL MATCH (a  )-[r]-(b  )
-                    WHERE a IN kept_nodes AND b IN kept_nodes
-                          {kept_filter_clause}
-                    RETURN filtered_nodes AS node_info,
-                           collect(DISTINCT r) AS relationships
-                    """
+                        main_query = f"""
+                        MATCH (n  )
+                        OPTIONAL MATCH (n)-[r]-()
+                        WITH n, COALESCE(count(r), 0) AS degree
+                        ORDER BY degree DESC
+                        LIMIT $max_nodes
+                        WITH collect({{node: n}}) AS filtered_nodes
+                        UNWIND filtered_nodes AS node_info
+                        WITH collect(node_info.node) AS kept_nodes, filtered_nodes
+                        OPTIONAL MATCH (a  )-[r]-(b  )
+                        WHERE a IN kept_nodes AND b IN kept_nodes
+                        RETURN filtered_nodes AS node_info,
+                               collect(DISTINCT r) AS relationships
+                        """
                     result_set = None
                     try:
-                        result_set = await session.run(
-                            main_query,
-                            {"max_nodes": max_nodes},
-                        )
+                        if has_graph_tag_filter:
+                            result_set = await session.run(
+                                main_query,
+                                {"max_nodes": max_nodes, "graph_tags": graph_tags, "sep": GRAPH_FIELD_SEP},
+                            )
+                        else:
+                            result_set = await session.run(
+                                main_query,
+                                {"max_nodes": max_nodes},
+                            )
                         record = await result_set.single()
                     finally:
                         if result_set:
                             await result_set.consume()
 
                 else:
-                    # Build graph_tag filter for entity_id query
+                    # Entity-centered query. If graph_tags are provided, graph_tag is treated as multi-valued
+                    # (split by GRAPH_FIELD_SEP) and we match if ANY selected tag is present.
                     if has_graph_tag_filter:
-                        if len(graph_tags) == 1:
-                            entity_filter = (
-                                f"start.entity_id = $entity_id AND start.graph_tag = '{graph_tags[0]}'"
-                            )
-                            node_filter = f"node.graph_tag = '{graph_tags[0]}'"
-                        else:
-                            graph_tags_str = "', '".join(graph_tags)
-                            entity_filter = (
-                                f"start.entity_id = $entity_id AND start.graph_tag IN ['{graph_tags_str}']"
-                            )
-                            node_filter = f"node.graph_tag IN ['{graph_tags_str}']"
-                        pre_apoc_with = "WITH start"
-                    else:
-                        # No graph_tag filter: choose a single best-matching start node (across all tags)
-                        # to keep the result deterministic and compatible with `.single()`.
-                        entity_filter = "start.entity_id = $entity_id"
-                        pre_apoc_with = """
+                        full_query = f"""
+                        MATCH (start  )
+                        WHERE start.entity_id = $entity_id
+                        WITH start,
+                             CASE
+                                 WHEN start.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(start.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(start.graph_tag) = 0 THEN ['default'] ELSE start.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(start.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(start.graph_tag), $sep)
+                                 END
+                             END AS stags
+                        WHERE any(t IN $graph_tags WHERE t IN stags)
                         OPTIONAL MATCH (start)-[r]-()
                         WITH start, count(r) AS degree
                         ORDER BY degree DESC
                         LIMIT 1
                         WITH start
+                        CALL apoc.path.subgraphAll(start, {{
+                            relationshipFilter: '',
+                            labelFilter: '{workspace_label}',
+                            minLevel: 0,
+                            maxLevel: $max_depth,
+                            bfs: true
+                        }})
+                        YIELD nodes, relationships
+                        WITH nodes, relationships, size(nodes) AS total_nodes
+                        UNWIND nodes AS node
+                        WITH node, relationships, total_nodes,
+                             CASE
+                                 WHEN node.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(node.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(node.graph_tag), $sep)
+                                 END
+                             END AS ntags
+                        WHERE any(t IN $graph_tags WHERE t IN ntags)
+                        WITH collect({{node: node}}) AS node_info, relationships, total_nodes
+                        RETURN node_info, relationships, total_nodes
                         """
-                        # No filtering: keep all nodes returned by traversal
-                        node_filter = "true"
-                    
-                    # First try without limit to check if we need to truncate
-                    full_query = f"""
-                    MATCH (start  )
-                    WHERE {entity_filter}
-                    {pre_apoc_with}
-                    CALL apoc.path.subgraphAll(start, {{
-                        relationshipFilter: '',
-                        labelFilter: '{workspace_label}',
-                        minLevel: 0,
-                        maxLevel: $max_depth,
-                        bfs: true
-                    }})
-                    YIELD nodes, relationships
-                    WITH nodes, relationships, size(nodes) AS total_nodes
-                    UNWIND nodes AS node
-                    WITH node, relationships, total_nodes
-                    WHERE {node_filter}
-                    WITH collect({{node: node}}) AS node_info, relationships, total_nodes
-                    RETURN node_info, relationships, total_nodes
-                    """
+                    else:
+                        # No graph_tag filter: choose a single best-matching start node (across all tags) by degree.
+                        full_query = f"""
+                        MATCH (start  )
+                        WHERE start.entity_id = $entity_id
+                        OPTIONAL MATCH (start)-[r]-()
+                        WITH start, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        WITH start
+                        CALL apoc.path.subgraphAll(start, {{
+                            relationshipFilter: '',
+                            labelFilter: '{workspace_label}',
+                            minLevel: 0,
+                            maxLevel: $max_depth,
+                            bfs: true
+                        }})
+                        YIELD nodes, relationships
+                        WITH nodes, relationships, size(nodes) AS total_nodes
+                        UNWIND nodes AS node
+                        WITH collect({{node: node}}) AS node_info, relationships, total_nodes
+                        RETURN node_info, relationships, total_nodes
+                        """
 
                     # Try to get full result
                     full_result = None
                     try:
-                        full_result = await session.run(
-                            full_query,
-                            {
-                                "entity_id": node_label,
-                                "max_depth": max_depth,
-                            },
-                        )
+                        params: dict[str, object] = {
+                            "entity_id": node_label,
+                            "max_depth": max_depth,
+                        }
+                        if has_graph_tag_filter:
+                            params["graph_tags"] = graph_tags
+                            params["sep"] = GRAPH_FIELD_SEP
+                        full_result = await session.run(full_query, params)
                         full_record = await full_result.single()
 
                         # If no record found, return empty KnowledgeGraph
@@ -1309,35 +1378,73 @@ class Neo4JStorage(BaseGraphStorage):
                             )
 
                             # Run limited query
-                            limited_query = f"""
-                            MATCH (start  )
-                            WHERE {entity_filter}
-                            {pre_apoc_with}
-                            CALL apoc.path.subgraphAll(start, {{
-                                relationshipFilter: '',
-                                labelFilter: '{workspace_label}',
-                                minLevel: 0,
-                                maxLevel: $max_depth,
-                                limit: $max_nodes,
-                                bfs: true
-                            }})
-                            YIELD nodes, relationships
-                            UNWIND nodes AS node
-                            WITH node, relationships
-                            WHERE {node_filter}
-                            WITH collect({{node: node}}) AS node_info, relationships
-                            RETURN node_info, relationships
-                            """
+                            if has_graph_tag_filter:
+                                limited_query = f"""
+                                MATCH (start  )
+                                WHERE start.entity_id = $entity_id
+                                WITH start,
+                                     CASE
+                                         WHEN start.graph_tag IS NULL OR toString(start.graph_tag) = '' THEN ['default']
+                                         ELSE split(toString(start.graph_tag), $sep)
+                                     END AS stags
+                                WHERE any(t IN $graph_tags WHERE t IN stags)
+                                OPTIONAL MATCH (start)-[r]-()
+                                WITH start, count(r) AS degree
+                                ORDER BY degree DESC
+                                LIMIT 1
+                                WITH start
+                                CALL apoc.path.subgraphAll(start, {{
+                                    relationshipFilter: '',
+                                    labelFilter: '{workspace_label}',
+                                    minLevel: 0,
+                                    maxLevel: $max_depth,
+                                    limit: $max_nodes,
+                                    bfs: true
+                                }})
+                                YIELD nodes, relationships
+                                UNWIND nodes AS node
+                                WITH node, relationships,
+                                     CASE
+                                         WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
+                                         ELSE split(toString(node.graph_tag), $sep)
+                                     END AS ntags
+                                WHERE any(t IN $graph_tags WHERE t IN ntags)
+                                WITH collect({{node: node}}) AS node_info, relationships
+                                RETURN node_info, relationships
+                                """
+                            else:
+                                limited_query = f"""
+                                MATCH (start  )
+                                WHERE start.entity_id = $entity_id
+                                OPTIONAL MATCH (start)-[r]-()
+                                WITH start, count(r) AS degree
+                                ORDER BY degree DESC
+                                LIMIT 1
+                                WITH start
+                                CALL apoc.path.subgraphAll(start, {{
+                                    relationshipFilter: '',
+                                    labelFilter: '{workspace_label}',
+                                    minLevel: 0,
+                                    maxLevel: $max_depth,
+                                    limit: $max_nodes,
+                                    bfs: true
+                                }})
+                                YIELD nodes, relationships
+                                UNWIND nodes AS node
+                                WITH collect({{node: node}}) AS node_info, relationships
+                                RETURN node_info, relationships
+                                """
                             result_set = None
                             try:
-                                result_set = await session.run(
-                                    limited_query,
-                                    {
-                                        "entity_id": node_label,
-                                        "max_depth": max_depth,
-                                        "max_nodes": max_nodes,
-                                    },
-                                )
+                                limited_params: dict[str, object] = {
+                                    "entity_id": node_label,
+                                    "max_depth": max_depth,
+                                    "max_nodes": max_nodes,
+                                }
+                                if has_graph_tag_filter:
+                                    limited_params["graph_tags"] = graph_tags
+                                    limited_params["sep"] = GRAPH_FIELD_SEP
+                                result_set = await session.run(limited_query, limited_params)
                                 record = await result_set.single()
                             finally:
                                 if result_set:
@@ -1432,38 +1539,71 @@ class Neo4JStorage(BaseGraphStorage):
         visited_edges = set()
         visited_edge_pairs = set()
 
-        # Build graph_tag filter condition
+        # Build graph_tag filter condition.
+        # IMPORTANT: This fallback path is used when APOC is unavailable, so do NOT rely on any apoc.* procedures.
         if has_graph_tag_filter:
-            if len(graph_tags) == 1:
-                graph_tag_filter = f"n.graph_tag = '{graph_tags[0]}'"
-                graph_tag_filter_rel = f"b.graph_tag = '{graph_tags[0]}'"
-            else:
-                graph_tags_str = "', '".join(graph_tags)
-                graph_tag_filter = f"n.graph_tag IN ['{graph_tags_str}']"
-                graph_tag_filter_rel = f"b.graph_tag IN ['{graph_tags_str}']"
+            graph_tag_filter = """
+            WITH n,
+                 CASE
+                     WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
+                     ELSE split(toString(n.graph_tag), $sep)
+                 END AS ntags
+            WHERE any(t IN $graph_tags WHERE t IN ntags)
+            """
+            graph_tag_filter_rel = """
+            WITH r, b, edge_id, target_id,
+                 CASE
+                     WHEN b.graph_tag IS NULL OR toString(b.graph_tag) = '' THEN ['default']
+                     ELSE split(toString(b.graph_tag), $sep)
+                 END AS btags
+            WHERE any(t IN $graph_tags WHERE t IN btags)
+            WITH r, b, edge_id, target_id
+            """
         else:
-            graph_tag_filter = "true"
-            graph_tag_filter_rel = "true"
+            graph_tag_filter = ""
+            graph_tag_filter_rel = ""
 
         # Get the starting node's data
         workspace_label = self._get_workspace_label()
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
-            query = f"""
-            MATCH (n   {{entity_id: $entity_id}})
-            WHERE {graph_tag_filter}
-            RETURN id(n) as node_id, n
-            """
-            node_result = await session.run(query, entity_id=node_label)
+            # If multiple nodes share the same entity_id, pick a deterministic start node by degree.
+            if has_graph_tag_filter:
+                query = f"""
+                MATCH (n   {{entity_id: $entity_id}})
+                {graph_tag_filter}
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS degree
+                ORDER BY degree DESC
+                LIMIT 1
+                RETURN id(n) as node_id, n
+                """
+                node_result = await session.run(
+                    query,
+                    entity_id=node_label,
+                    graph_tags=graph_tags,
+                    sep=GRAPH_FIELD_SEP,
+                )
+            else:
+                query = f"""
+                MATCH (n   {{entity_id: $entity_id}})
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS degree
+                ORDER BY degree DESC
+                LIMIT 1
+                RETURN id(n) as node_id, n
+                """
+                node_result = await session.run(query, entity_id=node_label)
             try:
                 node_record = await node_result.single()
                 if not node_record:
                     return result
 
                 # Create initial KnowledgeGraphNode
+                # Use Neo4j internal node id as stable unique id (align with APOC path output).
                 start_node = KnowledgeGraphNode(
-                    id=f"{node_record['n'].get('entity_id')}",
+                    id=str(node_record["node_id"]),
                     labels=[node_record["n"].get("entity_id")],
                     properties=dict(node_record["n"]._properties),
                 )
@@ -1512,12 +1652,22 @@ class Neo4JStorage(BaseGraphStorage):
             ) as session:
                 workspace_label = self._get_workspace_label()
                 query = f"""
-                MATCH (a   {{entity_id: $entity_id}})-[r]-(b  )
-                WHERE {graph_tag_filter_rel}
+                MATCH (a  )
+                WHERE id(a) = $node_id
+                MATCH (a)-[r]-(b  )
                 WITH r, b, id(r) as edge_id, id(b) as target_id
+                {graph_tag_filter_rel if has_graph_tag_filter else ""}
                 RETURN r, b, edge_id, target_id
                 """
-                results = await session.run(query, entity_id=current_node.id)
+                if has_graph_tag_filter:
+                    results = await session.run(
+                        query,
+                        node_id=int(current_node.id),
+                        graph_tags=graph_tags,
+                        sep=GRAPH_FIELD_SEP,
+                    )
+                else:
+                    results = await session.run(query, node_id=int(current_node.id))
 
                 # Get all records and release database connection
                 records = await results.fetch(1000)  # Max neighbor nodes we can handle
@@ -1531,11 +1681,12 @@ class Neo4JStorage(BaseGraphStorage):
                     if edge_id not in visited_edges:
                         b_node = record["b"]
                         target_id = b_node.get("entity_id")
+                        target_node_id = str(record["target_id"])
 
                         if target_id:  # Only process if target node has entity_id
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
-                                id=f"{target_id}",
+                                id=target_node_id,
                                 labels=[target_id],
                                 properties=dict(b_node._properties),
                             )
@@ -1544,32 +1695,44 @@ class Neo4JStorage(BaseGraphStorage):
                             target_edge = KnowledgeGraphEdge(
                                 id=f"{edge_id}",
                                 type=rel.type,
-                                source=f"{current_node.id}",
-                                target=f"{target_id}",
+                                source=str(current_node.id),
+                                target=target_node_id,
                                 properties=dict(rel),
                             )
 
                             # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
-                            sorted_pair = tuple(sorted([current_node.id, target_id]))
+                            sorted_pair = tuple(sorted([str(current_node.id), target_node_id]))
 
                             # Check if the same edge already exists (considering undirectedness)
                             if sorted_pair not in visited_edge_pairs:
-                                # Only add the edge if the target node is already in the result or will be added
-                                if target_id in visited_nodes or (
-                                    target_id not in visited_nodes
-                                    and current_depth < max_depth
-                                ):
+                                # Only add edges whose endpoints will be included in `result.nodes`.
+                                #
+                                # IMPORTANT:
+                                # - `visited_nodes` contains Neo4j internal node ids (strings).
+                                # - When we are at the node limit, we must NOT add edges to nodes we won't include,
+                                #   otherwise the frontend will reject the graph as invalid.
+                                will_include_target = (
+                                    target_node_id in visited_nodes
+                                    or (
+                                        target_node_id not in visited_nodes
+                                        and current_depth < max_depth
+                                        and (len(visited_nodes) + len(queue) < max_nodes)
+                                    )
+                                )
+                                if will_include_target:
                                     result.edges.append(target_edge)
                                     visited_edges.add(edge_id)
                                     visited_edge_pairs.add(sorted_pair)
 
                             # Only add unvisited nodes to the queue for further expansion
-                            if target_id not in visited_nodes:
+                            if target_node_id not in visited_nodes:
                                 # Only add to queue if we're not at max depth yet
                                 if current_depth < max_depth:
-                                    # Add node to queue with incremented depth
-                                    # Edge is already added to result, so we pass None as edge
-                                    queue.append((target_node, None, current_depth + 1))
+                                    # Respect max_nodes budget (visited + queued must not exceed max_nodes)
+                                    if len(visited_nodes) + len(queue) < max_nodes:
+                                        # Add node to queue with incremented depth
+                                        # Edge is already added to result, so we pass None as edge
+                                        queue.append((target_node, None, current_depth + 1))
                                 else:
                                     # At max depth, we've already added the edge but we don't add the node
                                     # This prevents adding nodes beyond max_depth to the result
@@ -1613,8 +1776,13 @@ class Neo4JStorage(BaseGraphStorage):
                 WHERE n.entity_id IS NOT NULL
                 WITH n,
                      CASE
-                         WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                         ELSE split(toString(n.graph_tag), $sep)
+                         WHEN n.graph_tag IS NULL THEN ['default']
+                         WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                             THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                         ELSE CASE
+                             WHEN toString(n.graph_tag) = '' THEN ['default']
+                             ELSE split(toString(n.graph_tag), $sep)
+                         END
                      END AS tags
                 WHERE any(t IN $graph_tags WHERE t IN tags)
                 RETURN DISTINCT n.entity_id AS label
@@ -1831,16 +1999,26 @@ class Neo4JStorage(BaseGraphStorage):
                     WHERE n.entity_id IS NOT NULL
                     WITH n,
                          CASE
-                             WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                             ELSE split(toString(n.graph_tag), $sep)
+                             WHEN n.graph_tag IS NULL THEN ['default']
+                             WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                             ELSE CASE
+                                 WHEN toString(n.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(n.graph_tag), $sep)
+                             END
                          END AS ntags
                     WHERE any(t IN $graph_tags WHERE t IN ntags)
                     OPTIONAL MATCH (n)-[r]-(m  )
                     WHERE m.entity_id IS NOT NULL
                     WITH n, r, m,
                          CASE
-                             WHEN m.graph_tag IS NULL OR toString(m.graph_tag) = '' THEN ['default']
-                             ELSE split(toString(m.graph_tag), $sep)
+                             WHEN m.graph_tag IS NULL THEN ['default']
+                             WHEN apoc.meta.type(m.graph_tag) STARTS WITH 'LIST'
+                                 THEN CASE WHEN size(m.graph_tag) = 0 THEN ['default'] ELSE m.graph_tag END
+                             ELSE CASE
+                                 WHEN toString(m.graph_tag) = '' THEN ['default']
+                                 ELSE split(toString(m.graph_tag), $sep)
+                             END
                          END AS mtags
                     WHERE r IS NULL OR any(t IN $graph_tags WHERE t IN mtags)
                     WITH n.entity_id AS label, count(r) AS degree
@@ -1905,8 +2083,13 @@ class Neo4JStorage(BaseGraphStorage):
             tag_filter_clause = """
             WITH node, score,
                  CASE
-                     WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(node.graph_tag), $sep)
+                     WHEN node.graph_tag IS NULL THEN ['default']
+                     WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                         THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
+                     ELSE CASE
+                         WHEN toString(node.graph_tag) = '' THEN ['default']
+                         ELSE split(toString(node.graph_tag), $sep)
+                     END
                  END AS tags
             WHERE any(t IN $graph_tags WHERE t IN tags)
             WITH node, score
@@ -1995,8 +2178,13 @@ class Neo4JStorage(BaseGraphStorage):
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS tags
                         WHERE any(t IN $graph_tags WHERE t IN tags)
                         WITH n.entity_id AS label
@@ -2045,8 +2233,13 @@ class Neo4JStorage(BaseGraphStorage):
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
-                                 WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                                 ELSE split(toString(n.graph_tag), $sep)
+                                 WHEN n.graph_tag IS NULL THEN ['default']
+                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
+                                 ELSE CASE
+                                     WHEN toString(n.graph_tag) = '' THEN ['default']
+                                     ELSE split(toString(n.graph_tag), $sep)
+                                 END
                              END AS tags
                         WHERE any(t IN $graph_tags WHERE t IN tags)
                         WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
