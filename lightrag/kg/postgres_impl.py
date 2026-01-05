@@ -4177,7 +4177,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         return out
 
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
         Get all labels (node IDs) in the graph.
 
@@ -4613,7 +4613,9 @@ class PGGraphStorage(BaseGraphStorage):
             edges.append(edge_properties)
         return edges
 
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities) using native SQL for performance."""
         try:
             # Native SQL query to calculate node degrees directly from AGE's underlying tables
@@ -4656,7 +4658,9 @@ class PGGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
             return []
 
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Search labels with fuzzy matching using native, parameterized SQL for performance and security."""
         query_lower = query.lower().strip()
         if not query_lower:

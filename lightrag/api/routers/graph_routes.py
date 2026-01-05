@@ -117,7 +117,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         include_in_schema=False,
     )
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
-    async def get_graph_labels():
+    async def get_graph_labels(
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
+    ):
         """
         Get all graph labels
 
@@ -125,7 +130,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             List[str]: List of graph labels
         """
         try:
-            return await rag.get_graph_labels()
+            return await rag.get_graph_labels(graph_tags=graph_tags)
         except Exception as e:
             logger.error(f"Error getting graph labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -138,6 +143,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             300, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
     ):
         """
         Get popular labels by node degree (most connected entities)
@@ -149,7 +158,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             List[str]: List of popular labels sorted by degree (highest first)
         """
         try:
-            return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+            return await rag.chunk_entity_relation_graph.get_popular_labels(
+                limit, graph_tags=graph_tags
+            )
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -163,6 +174,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             50, description="Maximum number of search results to return", ge=1, le=100
         ),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
     ):
         """
         Search labels with fuzzy matching
@@ -175,7 +190,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             List[str]: List of matching labels sorted by relevance
         """
         try:
-            return await rag.chunk_entity_relation_graph.search_labels(q, limit)
+            return await rag.chunk_entity_relation_graph.search_labels(
+                q, limit, graph_tags=graph_tags
+            )
         except Exception as e:
             logger.error(f"Error searching labels with query '{q}': {str(e)}")
             logger.error(traceback.format_exc())

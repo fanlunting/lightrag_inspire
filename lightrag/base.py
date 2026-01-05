@@ -619,8 +619,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     # TODO: deprecated
     @abstractmethod
-    async def get_all_labels(self) -> list[str]:
+    async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """Get all labels in the graph.
+
+        Args:
+            graph_tags: Optional list of graph tags to filter labels by. When provided,
+                only labels for nodes that match ANY of the tags should be returned.
+                Implementations that don't support graph_tag filtering may ignore this.
 
         Returns:
             A list of all node labels in the graph, sorted alphabetically
@@ -661,23 +666,33 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
-    async def get_popular_labels(self, limit: int = 300) -> list[str]:
+    async def get_popular_labels(
+        self, limit: int = 300, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Get popular labels by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
+            graph_tags: Optional list of graph tags to filter labels by. When provided,
+                only labels for nodes that match ANY of the tags should be returned.
+                Implementations that don't support graph_tag filtering may ignore this.
 
         Returns:
             List of labels sorted by degree (highest first)
         """
 
     @abstractmethod
-    async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+    async def search_labels(
+        self, query: str, limit: int = 50, graph_tags: list[str] | None = None
+    ) -> list[str]:
         """Search labels with fuzzy matching
 
         Args:
             query: Search query string
             limit: Maximum number of results to return
+            graph_tags: Optional list of graph tags to filter results by. When provided,
+                only labels for nodes that match ANY of the tags should be returned.
+                Implementations that don't support graph_tag filtering may ignore this.
 
         Returns:
             List of matching labels sorted by relevance
