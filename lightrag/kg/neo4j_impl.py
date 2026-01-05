@@ -1681,11 +1681,12 @@ class Neo4JStorage(BaseGraphStorage):
                     if edge_id not in visited_edges:
                         b_node = record["b"]
                         target_id = b_node.get("entity_id")
+                        target_node_id = str(record["target_id"])
 
                         if target_id:  # Only process if target node has entity_id
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
-                                id=str(record["target_id"]),
+                                id=target_node_id,
                                 labels=[target_id],
                                 properties=dict(b_node._properties),
                             )
@@ -1695,31 +1696,43 @@ class Neo4JStorage(BaseGraphStorage):
                                 id=f"{edge_id}",
                                 type=rel.type,
                                 source=str(current_node.id),
-                                target=str(record["target_id"]),
+                                target=target_node_id,
                                 properties=dict(rel),
                             )
 
                             # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
-                            sorted_pair = tuple(sorted([str(current_node.id), str(record["target_id"])]))
+                            sorted_pair = tuple(sorted([str(current_node.id), target_node_id]))
 
                             # Check if the same edge already exists (considering undirectedness)
                             if sorted_pair not in visited_edge_pairs:
-                                # Only add the edge if the target node is already in the result or will be added
-                                if target_id in visited_nodes or (
-                                    target_id not in visited_nodes
-                                    and current_depth < max_depth
-                                ):
+                                # Only add edges whose endpoints will be included in `result.nodes`.
+                                #
+                                # IMPORTANT:
+                                # - `visited_nodes` contains Neo4j internal node ids (strings).
+                                # - When we are at the node limit, we must NOT add edges to nodes we won't include,
+                                #   otherwise the frontend will reject the graph as invalid.
+                                will_include_target = (
+                                    target_node_id in visited_nodes
+                                    or (
+                                        target_node_id not in visited_nodes
+                                        and current_depth < max_depth
+                                        and (len(visited_nodes) + len(queue) < max_nodes)
+                                    )
+                                )
+                                if will_include_target:
                                     result.edges.append(target_edge)
                                     visited_edges.add(edge_id)
                                     visited_edge_pairs.add(sorted_pair)
 
                             # Only add unvisited nodes to the queue for further expansion
-                            if target_id not in visited_nodes:
+                            if target_node_id not in visited_nodes:
                                 # Only add to queue if we're not at max depth yet
                                 if current_depth < max_depth:
-                                    # Add node to queue with incremented depth
-                                    # Edge is already added to result, so we pass None as edge
-                                    queue.append((target_node, None, current_depth + 1))
+                                    # Respect max_nodes budget (visited + queued must not exceed max_nodes)
+                                    if len(visited_nodes) + len(queue) < max_nodes:
+                                        # Add node to queue with incremented depth
+                                        # Edge is already added to result, so we pass None as edge
+                                        queue.append((target_node, None, current_depth + 1))
                                 else:
                                     # At max depth, we've already added the edge but we don't add the node
                                     # This prevents adding nodes beyond max_depth to the result
