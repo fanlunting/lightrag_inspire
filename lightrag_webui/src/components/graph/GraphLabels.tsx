@@ -205,14 +205,16 @@ const GraphLabels = ({ value, onChange, graphTags }: Props) => {
 
   return (
     <div className="flex items-center">
-      {/* Always show refresh button */}
+      {/* Refresh button intentionally hidden from UI (kept logic for future use) */}
       <Button
         size="icon"
         variant={controlButtonVariant}
         onClick={handleRefresh}
         tooltip={getRefreshTooltip()}
-        className="mr-2"
+        className="mr-2 hidden"
         disabled={isRefreshing}
+        aria-hidden="true"
+        tabIndex={-1}
       >
         <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
       </Button>

@@ -228,6 +228,16 @@ const GraphViewer = () => {
     return !(tagsEqual && labelEqual)
   }, [appliedGraphTags, draftGraphTags, appliedQueryLabel, draftQueryLabel])
 
+  const searchButtonLabel = useMemo(() => {
+    // Scheme A: always clickable (unless loading). When drafts differ, it's "apply & query";
+    // otherwise it's a "refresh" of the same applied conditions.
+    return hasPendingSearch ? '应用并查询' : '刷新'
+  }, [hasPendingSearch])
+
+  const searchButtonTooltip = useMemo(() => {
+    return hasPendingSearch ? '应用筛选并重新拉取图数据' : '使用当前筛选条件刷新图数据'
+  }, [hasPendingSearch])
+
   const onSearchClick = useCallback(() => {
     // Apply drafts into global settings, then trigger graph re-fetch
     const normalizedLabel = (draftQueryLabel || '').trim() || '*'
@@ -280,12 +290,12 @@ const GraphViewer = () => {
                   variant="outline"
                   className="bg-background/60 h-8 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:opacity-100"
                   onClick={onSearchClick}
-                  disabled={!hasPendingSearch}
-                  tooltip="Search"
+                  disabled={isFetching}
+                  tooltip={searchButtonTooltip}
                   side="bottom"
                 >
                   <Search className="h-4 w-4 mr-2" />
-                  搜索
+                  {searchButtonLabel}
                 </Button>
               </div>
             </>
