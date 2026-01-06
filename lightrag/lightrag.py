@@ -4352,6 +4352,447 @@ class LightRAG:
             "same_edges": len(same_edges),
             "similar_edges": len(similar_edges),
         }
+
+    async def amerge_graph_new_tag(
+        self,
+        graph_tags: list[str],
+        similarity_threshold: float = 0.85,
+        top_k: int = 8,
+        llm_confirm: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Create a NEW fusion graph_tag by writing ONLY new relationships (no node changes).
+
+        This is essentially :meth:`amerge_graph` but:
+        - it generates a new `fused_graph_tag` (call it "C")
+        - it writes SAME_AS / SIMILAR edges whose *relationship properties* include
+          `graph_tag = fused_graph_tag` for easier filtering/deletion
+        - endpoints remain the original nodes from the source graph_tags (A/B/...)
+
+        For Neo4j, endpoints are disambiguated via:
+        - source_graph_tag / target_graph_tag in relationship properties
+
+        Result is "edge-only": A/B nodes remain untouched.
+        """
+        if not graph_tags:
+            raise ValueError("graph_tags cannot be empty")
+
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags:
+            raise ValueError("graph_tags must contain non-empty values")
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fused_graph_tag = "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+        fused_graph_tag = f"{fused_graph_tag}_{timestamp_suffix}"
+
+        def _split(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+
+        def _join(values: list[str]) -> str:
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for item in values:
+                if item and item not in seen:
+                    seen.add(item)
+                    ordered.append(item)
+            return GRAPH_FIELD_SEP.join(ordered)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+
+        target_nodes = [n for n in nodes if _has_tag(n)]
+        if not target_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+
+        # One representative node per entity_id (prefer longest description).
+        node_lookup: dict[str, dict[str, Any]] = {}
+        # All node instances per entity_id per graph_tag (Neo4j disambiguation).
+        node_instances: dict[str, dict[str, dict[str, Any]]] = {}
+
+        for node in target_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+
+            # Representative selection for LLM prompt + payload base
+            if entity_id not in node_lookup:
+                node_lookup[entity_id] = dict(node)
+            else:
+                old_desc = str(node_lookup[entity_id].get("description") or "")
+                new_desc = str(node.get("description") or "")
+                if len(new_desc) > len(old_desc):
+                    node_lookup[entity_id] = dict(node)
+
+            tags = _split(node.get("graph_tag")) or ["default"]
+            for tag in tags:
+                if tag in normalized_tags:
+                    node_instances.setdefault(entity_id, {})[tag] = dict(node)
+
+        if not node_lookup:
+            raise ValueError(f"No valid nodes found for tags {normalized_tags}")
+
+        # SAME_AS: connect same entity_id across different graph_tag instances.
+        same_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
+        for entity_id, instances_by_tag in node_instances.items():
+            tags = sorted(instances_by_tag.keys())
+            if len(tags) < 2:
+                continue
+            for i in range(len(tags)):
+                for j in range(i + 1, len(tags)):
+                    same_edges.append((entity_id, tags[i], entity_id, tags[j]))
+
+        async def _get_embedding(entity_name: str) -> list[float] | None:
+            """
+            Fetch embedding for an entity from entities_vdb.
+
+            Many vector backends intentionally do not return vectors in get_by_id();
+            prefer get_vectors_by_ids() and fall back to metadata-only records.
+            """
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            try:
+                vectors = await self.entities_vdb.get_vectors_by_ids([entity_vdb_id])
+                vec = vectors.get(entity_vdb_id)
+                return vec
+            except Exception as e:
+                logger.debug(
+                    f"amerge_graph_new_tag: failed get_vectors_by_ids for {entity_name}: {e}"
+                )
+                record = await self.entities_vdb.get_by_id(entity_vdb_id)
+                if not record:
+                    return None
+                return (
+                    record.get("embedding")
+                    or record.get("vector")
+                    or record.get("__vector__")
+                )
+
+        # SIMILAR: vector + optional LLM confirm, across selected graph_tags.
+        similar_edges: list[tuple[str, str, str, str]] = []  # (src_entity, src_tag, tgt_entity, tgt_tag)
+        for entity_id in node_instances.keys():
+            embedding = await _get_embedding(entity_id)
+            if embedding is None:
+                continue
+
+            neighbors = await self.entities_vdb.query(
+                query=entity_id, top_k=top_k, query_embedding=embedding
+            )
+            for neighbor in neighbors:
+                other_id = neighbor.get("entity_name") or neighbor.get("entity_id")
+                if not other_id or other_id == entity_id:
+                    continue
+
+                score = neighbor.get("score")
+                if score is None:
+                    score = neighbor.get("distance")
+                if score is None or float(score) < similarity_threshold:
+                    continue
+
+                if other_id not in node_instances:
+                    continue
+
+                is_similar = True
+                if llm_confirm:
+                    desc_a = node_lookup[entity_id].get("description", "")
+                    desc_b = node_lookup[other_id].get("description", "")
+                    prompt = (
+                        "请判断以下两个实体是否描述的是同一事物或高度相关：\n"
+                        f"实体A：{entity_id}\n描述：{desc_a}\n\n"
+                        f"实体B：{other_id}\n描述：{desc_b}\n\n"
+                        "若相同/高度相关，回复 YES，否则回复 NO。"
+                    )
+                    answer = await self.llm_model_func(prompt)
+                    is_similar = "YES" in answer.upper()
+
+                if is_similar:
+                    for src_tag in node_instances.get(entity_id, {}).keys():
+                        for tgt_tag in node_instances.get(other_id, {}).keys():
+                            similar_edges.append((entity_id, src_tag, other_id, tgt_tag))
+
+        async with graph_db_lock:
+            for src, src_tag, tgt, tgt_tag in same_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SAME_AS",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
+                    },
+                )
+            for src, src_tag, tgt, tgt_tag in similar_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SIMILAR",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                        "source_graph_tag": src_tag,
+                        "target_graph_tag": tgt_tag,
+                    },
+                )
+            await self.chunk_entity_relation_graph.index_done_callback()
+
+        return {
+            "graph_tag": fused_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "same_edges": len(same_edges),
+            "similar_edges": len(similar_edges),
+        }
+
+    async def amerge_graph_clone_nodes_new_tag(
+        self,
+        graph_tags: list[str],
+        similarity_threshold: float = 0.85,
+        top_k: int = 8,
+        llm_confirm: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Fuse graphs (by graph_tag) into a NEW graph_tag by COPYING nodes (no node fusion),
+        then generating new relationships inside the new graph.
+
+        Example:
+        - Input graph_tags = ["A", "B"]
+        - Output graph_tag = "C" (generated with timestamp suffix)
+        - C contains ALL nodes from A and B (A/B remain unchanged).
+        - Nodes are NOT fused/deduplicated. If A and B share the same entity_id, C will
+          contain two cloned nodes (one from A, one from B) with distinct cloned IDs.
+        - New relationships are generated in C:
+          - SAME_AS between cloned nodes that originate from the same original entity_id
+            but different source graph_tags.
+          - SIMILAR between cloned nodes based on vector similarity + optional LLM confirmation.
+        """
+        if not graph_tags:
+            raise ValueError("graph_tags cannot be empty")
+
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags:
+            raise ValueError("graph_tags must contain non-empty values")
+
+        timestamp_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fused_graph_tag = "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+        fused_graph_tag = f"{fused_graph_tag}_{timestamp_suffix}"
+
+        def _split(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+
+        target_nodes = [n for n in nodes if _has_tag(n)]
+        if not target_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+
+        # Build clones: one clone per (original_entity_id, matched_source_tag).
+        # We DO NOT write into source graphs; we write cloned nodes into fused_graph_tag only.
+        # Clone IDs must be unique within fused_graph_tag; use a stable suffix based on source_tag.
+        clone_lookup: dict[str, dict[str, Any]] = {}  # clone_entity_id -> payload
+        # Map original_entity_id -> {source_tag -> clone_entity_id}
+        clones_by_origin: dict[str, dict[str, str]] = {}
+        # For LLM prompts, pick the best description per original id.
+        origin_rep: dict[str, dict[str, Any]] = {}
+
+        for node in target_nodes:
+            original_entity_id = node.get("entity_id") or node.get("id")
+            if not original_entity_id:
+                continue
+
+            # Determine which of the requested tags this node belongs to.
+            node_tags = _split(node.get("graph_tag")) or ["default"]
+            matched_tags = [t for t in node_tags if t in normalized_tags]
+            if not matched_tags:
+                continue
+
+            # Representative (prefer longest description) for LLM prompt.
+            if original_entity_id not in origin_rep:
+                origin_rep[original_entity_id] = dict(node)
+            else:
+                old_desc = str(origin_rep[original_entity_id].get("description") or "")
+                new_desc = str(node.get("description") or "")
+                if len(new_desc) > len(old_desc):
+                    origin_rep[original_entity_id] = dict(node)
+
+            for source_tag in matched_tags:
+                # Clone ID: keep readable and stable; avoid collisions across tags.
+                clone_entity_id = f"{original_entity_id}@@{source_tag}"
+
+                # If multiple nodes map to the same (entity_id, tag) pair, keep the richest description.
+                if clone_entity_id in clone_lookup:
+                    old_desc = str(clone_lookup[clone_entity_id].get("description") or "")
+                    new_desc = str(node.get("description") or "")
+                    if len(new_desc) <= len(old_desc):
+                        continue
+
+                payload = dict(node)
+                payload["entity_id"] = clone_entity_id
+                payload["graph_tag"] = fused_graph_tag
+                payload["origin_entity_id"] = str(original_entity_id)
+                payload["origin_graph_tag"] = str(source_tag)
+                payload["updated_at"] = int(time.time())
+
+                # Neo4j storage sets a label from entity_type; ensure it's a single, non-empty string.
+                raw_entity_type = payload.get("entity_type")
+                if isinstance(raw_entity_type, str):
+                    et = raw_entity_type.split(GRAPH_FIELD_SEP)[0].strip()
+                elif isinstance(raw_entity_type, list) and raw_entity_type:
+                    et = str(raw_entity_type[0]).strip()
+                else:
+                    et = str(raw_entity_type or "").strip()
+                payload["entity_type"] = et or "Entity"
+
+                clone_lookup[clone_entity_id] = payload
+                clones_by_origin.setdefault(str(original_entity_id), {})[source_tag] = clone_entity_id
+
+        if not clone_lookup:
+            raise ValueError(f"No valid nodes found for tags {normalized_tags}")
+
+        # 1) Write cloned nodes into fused_graph_tag.
+        async with graph_db_lock:
+            for clone_entity_id, payload in clone_lookup.items():
+                await self.chunk_entity_relation_graph.upsert_node(clone_entity_id, payload)
+
+        # 2) SAME_AS inside C: connect clones of the same origin_entity_id across different source tags.
+        same_edges: list[tuple[str, str]] = []
+        for origin_entity_id, by_tag in clones_by_origin.items():
+            tags = sorted(by_tag.keys())
+            if len(tags) < 2:
+                continue
+            for i in range(len(tags)):
+                for j in range(i + 1, len(tags)):
+                    same_edges.append((by_tag[tags[i]], by_tag[tags[j]]))
+
+        async def _get_embedding(entity_name: str) -> list[float] | None:
+            """
+            Fetch embedding for an entity from entities_vdb by ORIGINAL entity_id.
+            """
+            entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+            try:
+                vectors = await self.entities_vdb.get_vectors_by_ids([entity_vdb_id])
+                vec = vectors.get(entity_vdb_id)
+                return vec
+            except Exception as e:
+                logger.debug(
+                    f"amerge_graph_clone_nodes_new_tag: failed get_vectors_by_ids for {entity_name}: {e}"
+                )
+                record = await self.entities_vdb.get_by_id(entity_vdb_id)
+                if not record:
+                    return None
+                return (
+                    record.get("embedding")
+                    or record.get("vector")
+                    or record.get("__vector__")
+                )
+
+        # 3) SIMILAR inside C: work at the origin-entity level, then connect corresponding clones in C.
+        similar_edges: set[tuple[str, str]] = set()
+        origin_ids = list(clones_by_origin.keys())
+        origin_id_set = set(origin_ids)
+
+        for origin_entity_id in origin_ids:
+            embedding = await _get_embedding(origin_entity_id)
+            if embedding is None:
+                continue
+
+            neighbors = await self.entities_vdb.query(
+                query=origin_entity_id, top_k=top_k, query_embedding=embedding
+            )
+            for neighbor in neighbors:
+                other_origin_id = neighbor.get("entity_name") or neighbor.get("entity_id")
+                if not other_origin_id or other_origin_id == origin_entity_id:
+                    continue
+
+                score = neighbor.get("score")
+                if score is None:
+                    score = neighbor.get("distance")
+                if score is None or float(score) < similarity_threshold:
+                    continue
+
+                if other_origin_id not in origin_id_set:
+                    continue
+
+                is_similar = True
+                if llm_confirm:
+                    desc_a = origin_rep.get(origin_entity_id, {}).get("description", "")
+                    desc_b = origin_rep.get(other_origin_id, {}).get("description", "")
+                    prompt = (
+                        "请判断以下两个实体是否描述的是同一事物或高度相关：\n"
+                        f"实体A：{origin_entity_id}\n描述：{desc_a}\n\n"
+                        f"实体B：{other_origin_id}\n描述：{desc_b}\n\n"
+                        "若相同/高度相关，回复 YES，否则回复 NO。"
+                    )
+                    answer = await self.llm_model_func(prompt)
+                    is_similar = "YES" in answer.upper()
+
+                if not is_similar:
+                    continue
+
+                # Connect all clone combinations in C between the two origin entities.
+                src_clones = clones_by_origin.get(origin_entity_id, {})
+                tgt_clones = clones_by_origin.get(other_origin_id, {})
+                for src_clone_id in src_clones.values():
+                    for tgt_clone_id in tgt_clones.values():
+                        a, b = sorted((src_clone_id, tgt_clone_id))
+                        similar_edges.add((a, b))
+
+        # 4) Write edges inside fused_graph_tag.
+        async with graph_db_lock:
+            for src, tgt in same_edges:
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SAME_AS",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+            for src, tgt in sorted(similar_edges):
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src,
+                    tgt,
+                    {
+                        "relationship_type": "SIMILAR",
+                        "graph_tag": fused_graph_tag,
+                        "fusion_tag": fused_graph_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+            await self.chunk_entity_relation_graph.index_done_callback()
+
+        return {
+            "graph_tag": fused_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "nodes_written": len(clone_lookup),
+            "same_edges": len(same_edges),
+            "similar_edges": len(similar_edges),
+        }
     
     def derive_schema_types(
         self,
