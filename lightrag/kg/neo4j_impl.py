@@ -1165,7 +1165,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -1206,7 +1206,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -1219,7 +1219,7 @@ class Neo4JStorage(BaseGraphStorage):
                              CASE
                                  WHEN connected IS NULL THEN ['__null__']
                                  WHEN connected.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(connected.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(connected.graph_tag) IS NOT NULL AND toString(connected.graph_tag) <> connected.graph_tag
                                      THEN CASE WHEN size(connected.graph_tag) = 0 THEN ['default'] ELSE connected.graph_tag END
                                  ELSE CASE
                                      WHEN toString(connected.graph_tag) = '' THEN ['default']
@@ -1280,7 +1280,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH start,
                              CASE
                                  WHEN start.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(start.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(start.graph_tag) IS NOT NULL AND toString(start.graph_tag) <> start.graph_tag
                                      THEN CASE WHEN size(start.graph_tag) = 0 THEN ['default'] ELSE start.graph_tag END
                                  ELSE CASE
                                      WHEN toString(start.graph_tag) = '' THEN ['default']
@@ -1306,7 +1306,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH node, relationships, total_nodes,
                              CASE
                                  WHEN node.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(node.graph_tag) IS NOT NULL AND toString(node.graph_tag) <> node.graph_tag
                                      THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
                                  ELSE CASE
                                      WHEN toString(node.graph_tag) = '' THEN ['default']
@@ -1777,7 +1777,7 @@ class Neo4JStorage(BaseGraphStorage):
                 WITH n,
                      CASE
                          WHEN n.graph_tag IS NULL THEN ['default']
-                         WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                         WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                              THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                          ELSE CASE
                              WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2000,7 +2000,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH n,
                          CASE
                              WHEN n.graph_tag IS NULL THEN ['default']
-                             WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                             WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                                  THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                              ELSE CASE
                                  WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2013,7 +2013,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH n, r, m,
                          CASE
                              WHEN m.graph_tag IS NULL THEN ['default']
-                             WHEN apoc.meta.type(m.graph_tag) STARTS WITH 'LIST'
+                             WHEN size(m.graph_tag) IS NOT NULL AND toString(m.graph_tag) <> m.graph_tag
                                  THEN CASE WHEN size(m.graph_tag) = 0 THEN ['default'] ELSE m.graph_tag END
                              ELSE CASE
                                  WHEN toString(m.graph_tag) = '' THEN ['default']
@@ -2084,7 +2084,7 @@ class Neo4JStorage(BaseGraphStorage):
             WITH node, score,
                  CASE
                      WHEN node.graph_tag IS NULL THEN ['default']
-                     WHEN apoc.meta.type(node.graph_tag) STARTS WITH 'LIST'
+                     WHEN size(node.graph_tag) IS NOT NULL AND toString(node.graph_tag) <> node.graph_tag
                          THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
                      ELSE CASE
                          WHEN toString(node.graph_tag) = '' THEN ['default']
@@ -2179,7 +2179,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2234,7 +2234,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN apoc.meta.type(n.graph_tag) STARTS WITH 'LIST'
+                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
