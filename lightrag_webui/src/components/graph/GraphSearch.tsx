@@ -22,6 +22,7 @@ export interface OptionItem {
 
 const NodeOption = ({ id }: { id: string }) => {
   const graph = useGraphStore.use.sigmaGraph()
+  const rawGraph = useGraphStore.use.rawGraph()
 
   // Early return if no graph or node doesn't exist
   if (!graph?.hasNode(id)) {
@@ -32,6 +33,7 @@ const NodeOption = ({ id }: { id: string }) => {
   const label = graph.getNodeAttribute(id, 'label') || id
   const color = graph.getNodeAttribute(id, 'color') || '#666'
   const size = graph.getNodeAttribute(id, 'size') || 4
+  const entityType = rawGraph?.getNode(id)?.properties?.entity_type as string | undefined
 
   // Custom node display component that doesn't rely on @react-sigma/graph-search
   return (
@@ -44,7 +46,10 @@ const NodeOption = ({ id }: { id: string }) => {
           backgroundColor: color
         }}
       />
-      <span className="truncate">{label}</span>
+      <div className="min-w-0 flex flex-col">
+        <span className="truncate">{label}</span>
+        {entityType && <span className="truncate text-xs text-muted-foreground">{entityType}</span>}
+      </div>
     </div>
   )
 }

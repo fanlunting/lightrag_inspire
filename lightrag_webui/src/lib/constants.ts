@@ -18,6 +18,15 @@ export const edgeColorSelected = '#F57F17'
 export const edgeColorHighlightedDarkTheme = '#F57F17'
 export const edgeColorHighlightedLightTheme = '#F57F17'
 
+// Fusion edge styling (amerge_graph): SAME_AS / SIMILAR
+// NOTE: these are used as "base" colors before hover/selection overrides.
+export const fusionEdgeColorSameAs = '#22C55E' // green
+export const fusionEdgeColorSimilar = '#3B82F6' // blue
+export const fusionEdgeColorAnyFusion = '#A855F7' // purple (fallback when fusion_tag exists but no relationship_type)
+
+// Special filter value: show any fusion edge (fusion_tag is present)
+export const fusionTagAny = '__any_fusion__'
+
 export const searchResultLimit = 50
 export const labelListLimit = 100
 
