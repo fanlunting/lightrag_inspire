@@ -135,12 +135,24 @@ const GraphViewer = () => {
   // Draft filters: user edits these, but we only fetch after clicking "Search"
   const [draftGraphTags, setDraftGraphTags] = useState<string[]>(appliedGraphTags)
   const [draftQueryLabel, setDraftQueryLabel] = useState<string>(appliedQueryLabel || '*')
-  const [draftMaxNodes, setDraftMaxNodes] = useState<number>(appliedMaxNodes || 100)
+  // Keep as text to allow empty/partial input while editing (fixes "can't delete last digit")
+  const [draftMaxNodesText, setDraftMaxNodesText] = useState<string>(String(appliedMaxNodes || 100))
 
   // Keep drafts in sync if applied values change elsewhere
   useEffect(() => setDraftGraphTags(appliedGraphTags), [appliedGraphTags])
   useEffect(() => setDraftQueryLabel(appliedQueryLabel || '*'), [appliedQueryLabel])
-  useEffect(() => setDraftMaxNodes(appliedMaxNodes || 100), [appliedMaxNodes])
+  useEffect(() => setDraftMaxNodesText(String(appliedMaxNodes || 100)), [appliedMaxNodes])
+
+  const normalizeMaxNodes = useCallback(
+    (text: string) => {
+      const maxLimit = backendMaxGraphNodes || 1000
+      const parsed = Number.parseInt((text || '').trim(), 10)
+      const fallback = appliedMaxNodes || 100
+      const value = Number.isFinite(parsed) ? parsed : fallback
+      return Math.min(maxLimit, Math.max(1, value))
+    },
+    [backendMaxGraphNodes, appliedMaxNodes]
+  )
 
   // Memoize sigma settings to prevent unnecessary re-creation
   const memoizedSigmaSettings = useMemo(() => {
@@ -230,10 +242,18 @@ const GraphViewer = () => {
     const normalizeLabel = (x: string) => (x || '').trim() || '*'
     const labelEqual = normalizeLabel(appliedQueryLabel) === normalizeLabel(draftQueryLabel)
 
-    const nodesEqual = (appliedMaxNodes || 0) === (draftMaxNodes || 0)
+    const nodesEqual = (appliedMaxNodes || 0) === normalizeMaxNodes(draftMaxNodesText)
 
     return !(tagsEqual && labelEqual && nodesEqual)
-  }, [appliedGraphTags, draftGraphTags, appliedQueryLabel, draftQueryLabel, appliedMaxNodes, draftMaxNodes])
+  }, [
+    appliedGraphTags,
+    draftGraphTags,
+    appliedQueryLabel,
+    draftQueryLabel,
+    appliedMaxNodes,
+    draftMaxNodesText,
+    normalizeMaxNodes
+  ])
 
   const searchButtonLabel = useMemo(() => {
     // Scheme A: always clickable (unless loading). When drafts differ, it's "apply & query";
@@ -248,8 +268,7 @@ const GraphViewer = () => {
   const onSearchClick = useCallback(() => {
     // Apply drafts into global settings, then trigger graph re-fetch
     const normalizedLabel = (draftQueryLabel || '').trim() || '*'
-    const maxLimit = backendMaxGraphNodes || 1000
-    const normalizedMaxNodes = Math.min(maxLimit, Math.max(1, Number.isFinite(draftMaxNodes) ? draftMaxNodes : 100))
+    const normalizedMaxNodes = normalizeMaxNodes(draftMaxNodesText)
     useSettingsStore.getState().setSelectedGraphTags(draftGraphTags)
     useSettingsStore.getState().setQueryLabel(normalizedLabel)
     useSettingsStore.getState().setGraphMaxNodes(normalizedMaxNodes)
@@ -259,7 +278,7 @@ const GraphViewer = () => {
     graphState.setGraphDataFetchAttempted(false)
     graphState.setLastSuccessfulQueryLabel('')
     graphState.incrementGraphDataVersion()
-  }, [draftGraphTags, draftQueryLabel, draftMaxNodes, backendMaxGraphNodes])
+  }, [draftGraphTags, draftQueryLabel, draftMaxNodesText, normalizeMaxNodes])
 
   // Always render SigmaContainer but control its visibility with CSS
   return (
@@ -300,22 +319,23 @@ const GraphViewer = () => {
                   type="number"
                   inputMode="numeric"
                   className="bg-background/60 h-8 w-[96px] rounded-xl border-1 px-3 py-1 text-sm opacity-60 backdrop-blur-lg transition-all hover:opacity-100"
-                  value={draftMaxNodes}
+                  value={draftMaxNodesText}
                   min={1}
                   max={backendMaxGraphNodes || 1000}
                   title={`最大节点数（≤ ${backendMaxGraphNodes || 1000}）`}
                   onChange={(e) => {
-                    const text = e.target.value.trim()
-                    if (text.length === 0) return
-                    const next = Number.parseInt(text, 10)
-                    if (Number.isFinite(next)) {
-                      setDraftMaxNodes(next)
-                    }
+                    // Allow empty input while editing; normalize later on blur/search.
+                    setDraftMaxNodesText(e.target.value)
                   }}
                   onBlur={() => {
-                    const maxLimit = backendMaxGraphNodes || 1000
-                    const normalized = Math.min(maxLimit, Math.max(1, draftMaxNodes || 100))
-                    if (normalized !== draftMaxNodes) setDraftMaxNodes(normalized)
+                    const normalized = normalizeMaxNodes(draftMaxNodesText)
+                    setDraftMaxNodesText(String(normalized))
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const normalized = normalizeMaxNodes(draftMaxNodesText)
+                      setDraftMaxNodesText(String(normalized))
+                    }
                   }}
                 />
               </div>
