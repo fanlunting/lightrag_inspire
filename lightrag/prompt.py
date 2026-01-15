@@ -74,6 +74,7 @@ PROMPTS["entity_extraction_user_prompt"] = """---Task---
 Extract entities and relationships from the input text to be processed.
 
 ---Instructions---
+0. **output text language must be Chinese**
 1.  **Strict Adherence to Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system prompt.
 2.  **Output Content Only:** Output *only* the extracted list of entities and relationships. Do not include any introductory or concluding remarks, explanations, or additional text before or after the list.
 3.  **Relationship Type Guidance:** When specifying `relationship_type`, prefer values from `{relation_types}`. If none of the provided types apply, label it as `Other`.
@@ -87,6 +88,7 @@ PROMPTS["entity_continue_extraction_user_prompt"] = """---Task---
 Based on the last extraction task, identify and extract any **missed or incorrectly formatted** entities and relationships from the input text.
 
 ---Instructions---
+0. **output text language must be Chinese**
 1.  **Strict Adherence to System Format:** Strictly adhere to all format requirements for entity and relationship lists, including output order, field delimiters, and proper noun handling, as specified in the system instructions.
 2.  **Focus on Corrections/Additions:**
     *   **Do NOT** re-output entities and relationships that were **correctly and fully** extracted in the last task.
