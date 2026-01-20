@@ -309,19 +309,32 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         - r: {type: str, ...props} | str
         """
 
-        def _entity_from_value(v: Any) -> tuple[str, dict[str, Any]]:
+        def _entity_from_value(v: Any) -> tuple[str, str | None, dict[str, Any]]:
             if isinstance(v, str):
                 name = v.strip()
                 if not name:
                     raise ValueError("entity name cannot be empty")
-                return name, {}
+                return name, None, {}
             if isinstance(v, dict):
                 raw_name = v.get("name")
                 if not isinstance(raw_name, str) or not raw_name.strip():
                     raise ValueError("entity object must have non-empty 'name'")
                 name = raw_name.strip()
-                props = {k: vv for k, vv in v.items() if k != "name"}
-                return name, props
+                # `entity_type` is a structural field and should be separated from normal properties.
+                # Also tolerate common typos like `enity_type`.
+                raw_type = v.get("entity_type") or v.get("enity_type")
+                entity_type: str | None
+                if isinstance(raw_type, str):
+                    entity_type = raw_type.strip() or None
+                else:
+                    entity_type = None
+
+                props = {
+                    k: vv
+                    for k, vv in v.items()
+                    if k not in {"name", "entity_type", "enity_type"}
+                }
+                return name, entity_type, props
             raise ValueError("entity must be a string or an object with {name: ...}")
 
         def _relation_from_value(v: Any) -> tuple[str, dict[str, Any]]:
@@ -361,8 +374,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 if not isinstance(obj, dict):
                     raise ValueError("each line must be a JSON object")
 
-                h_name, h_props = _entity_from_value(obj.get("h"))
-                t_name, t_props = _entity_from_value(obj.get("t"))
+                h_name, h_type, h_props = _entity_from_value(obj.get("h"))
+                t_name, t_type, t_props = _entity_from_value(obj.get("t"))
                 r_type, r_props = _relation_from_value(obj.get("r"))
 
                 # Build descriptions for embeddings from properties (best-effort).
@@ -374,12 +387,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                             return v.strip()
                     if not props:
                         return ""
-                    skip_keys = {
-                        "entity_type",
-                        "graph_tag",
-                        "file_path",
-                        "source_id",
-                    }
+                    # Avoid mixing structural/meta fields into description.
+                    skip_keys = {"graph_tag", "file_path", "source_id"}
                     parts = []
                     for k, v in props.items():
                         if k in skip_keys or v is None:
@@ -398,6 +407,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     {
                         **h_props,
                         "description": h_desc,
+                        "entity_type": h_type or "UNKNOWN",
                         "file_path": file_path,
                         "source_id": "jsonl_import",
                         "graph_tag": normalized_tag,
@@ -413,6 +423,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     {
                         **t_props,
                         "description": t_desc,
+                        "entity_type": t_type or "UNKNOWN",
                         "file_path": file_path,
                         "source_id": "jsonl_import",
                         "graph_tag": normalized_tag,

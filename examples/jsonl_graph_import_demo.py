@@ -63,14 +63,18 @@ def _entity_from_value(v):
         name = v.strip()
         if not name:
             raise ValueError("entity name cannot be empty")
-        return name, {}
+        return name, None, {}
     if isinstance(v, dict):
         raw_name = v.get("name")
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise ValueError("entity object must have non-empty 'name'")
         name = raw_name.strip()
-        props = {k: vv for k, vv in v.items() if k != "name"}
-        return name, props
+        raw_type = v.get("entity_type") or v.get("enity_type")
+        entity_type = raw_type.strip() if isinstance(raw_type, str) and raw_type.strip() else None
+        props = {
+            k: vv for k, vv in v.items() if k not in {"name", "entity_type", "enity_type"}
+        }
+        return name, entity_type, props
     raise ValueError("entity must be a string or an object with {name: ...}")
 
 
@@ -121,8 +125,8 @@ async def import_jsonl_to_graph(rag: LightRAG, jsonl_path: str, graph_tag: str, 
                 if not isinstance(obj, dict):
                     raise ValueError("each line must be a JSON object")
 
-                h_name, h_props = _entity_from_value(obj.get("h"))
-                t_name, t_props = _entity_from_value(obj.get("t"))
+                h_name, h_type, h_props = _entity_from_value(obj.get("h"))
+                t_name, t_type, t_props = _entity_from_value(obj.get("t"))
                 r_type, r_props = _relation_from_value(obj.get("r"))
 
                 h_desc = _desc_from_props(h_props)
@@ -136,6 +140,7 @@ async def import_jsonl_to_graph(rag: LightRAG, jsonl_path: str, graph_tag: str, 
                     {
                         **h_props,
                         "description": h_desc,
+                        "entity_type": h_type or "UNKNOWN",
                         "file_path": file_path,
                         "source_id": "jsonl_import",
                         "graph_tag": graph_tag,
@@ -150,6 +155,7 @@ async def import_jsonl_to_graph(rag: LightRAG, jsonl_path: str, graph_tag: str, 
                     {
                         **t_props,
                         "description": t_desc,
+                        "entity_type": t_type or "UNKNOWN",
                         "file_path": file_path,
                         "source_id": "jsonl_import",
                         "graph_tag": graph_tag,
