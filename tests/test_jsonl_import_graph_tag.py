@@ -1,12 +1,12 @@
 import asyncio
-import json
+import os
 import tempfile
 
 import numpy as np
+import pytest
 
 from lightrag.utils import EmbeddingFunc, compute_mdhash_id
 from lightrag.kg.shared_storage import initialize_share_data
-from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
 from lightrag.utils_graph import aupsert_entity, aupsert_relation, _tagged_entity_vdb_id
 
@@ -22,6 +22,17 @@ async def _mock_embed(texts, **kwargs):
 
 
 def test_jsonl_import_writes_graph_tag_and_embeddings():
+    # Neo4j integration test: skip if Neo4j is not configured.
+    if not (
+        os.getenv("NEO4J_URI")
+        and os.getenv("NEO4J_USERNAME")
+        and os.getenv("NEO4J_PASSWORD")
+    ):
+        pytest.skip("NEO4J_* env vars not set; skipping Neo4j integration test")
+
+    # Import lazily to avoid installing neo4j driver when skipped.
+    from lightrag.kg.neo4j_impl import Neo4JStorage
+
     initialize_share_data()
     emb = EmbeddingFunc(embedding_dim=4, func=_mock_embed)
 
@@ -33,8 +44,8 @@ def test_jsonl_import_writes_graph_tag_and_embeddings():
             "workspace": "test_ws",
         }
 
-        graph = NetworkXStorage(
-            namespace="graph",
+        graph = Neo4JStorage(
+            namespace="test_jsonl_import_graph_tag",
             workspace="test_ws",
             global_config=global_config,
             embedding_func=emb,
@@ -76,59 +87,89 @@ def test_jsonl_import_writes_graph_tag_and_embeddings():
             await entities_vdb.initialize()
             await relations_vdb.initialize()
 
-            graph_tag = "西游记"
+            graph_tag = "西游记_test"
 
-            await aupsert_entity(
-                graph,
-                entities_vdb,
-                relations_vdb,
-                "孙悟空",
-                {
-                    "title": "齐天大圣",
-                    "weapon": "如意金箍棒",
-                    "description": "title: 齐天大圣；weapon: 如意金箍棒",
-                    "graph_tag": graph_tag,
-                    "file_path": "unit_test",
-                },
-            )
+            # Ensure cleanup even if assertions fail.
+            try:
+                await aupsert_entity(
+                    graph,
+                    entities_vdb,
+                    relations_vdb,
+                    "孙悟空",
+                    {
+                        "title": "齐天大圣",
+                        "weapon": "如意金箍棒",
+                        "description": "title: 齐天大圣；weapon: 如意金箍棒",
+                        "graph_tag": graph_tag,
+                        "file_path": "unit_test",
+                    },
+                )
 
-            await aupsert_entity(
-                graph,
-                entities_vdb,
-                relations_vdb,
-                "唐僧",
-                {"species": "人", "description": "species: 人", "graph_tag": graph_tag},
-            )
+                await aupsert_entity(
+                    graph,
+                    entities_vdb,
+                    relations_vdb,
+                    "唐僧",
+                    {
+                        "species": "人",
+                        "description": "species: 人",
+                        "graph_tag": graph_tag,
+                    },
+                )
 
-            await aupsert_relation(
-                graph,
-                entities_vdb,
-                relations_vdb,
-                "孙悟空",
-                "唐僧",
-                {
-                    "keywords": "徒弟",
-                    "description": "type: 徒弟；order: 1",
-                    "order": 1,
-                    "graph_tag": graph_tag,
-                },
-            )
+                await aupsert_relation(
+                    graph,
+                    entities_vdb,
+                    relations_vdb,
+                    "孙悟空",
+                    "唐僧",
+                    {
+                        "keywords": "徒弟",
+                        "description": "type: 徒弟；order: 1",
+                        "order": 1,
+                        "graph_tag": graph_tag,
+                    },
+                )
 
-            node = await graph.get_node("孙悟空")
-            assert node is not None
-            assert node.get("graph_tag") == graph_tag
-            assert node.get("title") == "齐天大圣"
-            assert node.get("weapon") == "如意金箍棒"
+                # Validate graph_tag isolation at graph storage level.
+                assert await graph.has_node("孙悟空", graph_tag=graph_tag) is True
+                assert await graph.has_node("孙悟空", graph_tag="other_tag") is False
 
-            legacy_id = compute_mdhash_id("孙悟空", prefix="ent-")
-            tagged_id = _tagged_entity_vdb_id("孙悟空", graph_tag=graph_tag)
-            legacy = await entities_vdb.get_by_id(legacy_id)
-            tagged = await entities_vdb.get_by_id(tagged_id)
-            assert legacy is not None
-            assert tagged is not None
-            assert legacy.get("entity_name") == "孙悟空"
-            assert legacy.get("graph_tag") == graph_tag
-            assert tagged.get("embedding_scope") == "graph_tag"
+                node = await graph.get_node("孙悟空", graph_tag=graph_tag)
+                assert node is not None
+                assert node.get("graph_tag") == graph_tag
+                assert node.get("title") == "齐天大圣"
+                assert node.get("weapon") == "如意金箍棒"
+
+                edge = await graph.get_edge("孙悟空", "唐僧", graph_tag=graph_tag)
+                assert edge is not None
+                assert edge.get("graph_tag") == graph_tag
+                assert edge.get("order") == 1
+
+                # Validate both legacy + tag-scoped entity embeddings are written.
+                legacy_id = compute_mdhash_id("孙悟空", prefix="ent-")
+                tagged_id = _tagged_entity_vdb_id("孙悟空", graph_tag=graph_tag)
+                legacy = await entities_vdb.get_by_id(legacy_id)
+                tagged = await entities_vdb.get_by_id(tagged_id)
+                assert legacy is not None
+                assert tagged is not None
+                assert legacy.get("entity_name") == "孙悟空"
+                assert legacy.get("graph_tag") == graph_tag
+                assert tagged.get("embedding_scope") == "graph_tag"
+            finally:
+                # Cleanup nodes/edges created in this graph_tag.
+                try:
+                    await graph.remove_edges([("孙悟空", "唐僧")], graph_tag=graph_tag)
+                except Exception:
+                    pass
+                try:
+                    await graph.remove_nodes(["孙悟空", "唐僧"], graph_tag=graph_tag)
+                except Exception:
+                    pass
+                try:
+                    await graph.finalize()
+                except Exception:
+                    pass
 
         asyncio.run(_run())
 
