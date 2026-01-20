@@ -4,12 +4,14 @@ This module contains all graph-related routes for the LightRAG API.
 
 from typing import Optional, Dict, Any, List
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+import json
+from fastapi import APIRouter, Depends, Query, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
 from lightrag.kg.shared_storage import get_graph_db_lock
 from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.utils_graph import aupsert_entity, aupsert_relation
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -286,6 +288,193 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error merging graph tags: {str(e)}"
             )
+
+    @router.post("/graph/import/jsonl", dependencies=[Depends(combined_auth)])
+    async def import_graph_from_jsonl(
+        file: UploadFile = File(..., description="A .jsonl file containing KG triples"),
+        graph_tag: str = Form(
+            "default", description="graph_tag for isolating this imported graph"
+        ),
+        file_path: str = Form(
+            "jsonl_import",
+            description="A logical file_path recorded into node/edge metadata",
+        ),
+    ):
+        """
+        Import KG triples from a JSONL file.
+
+        Each line is a JSON object with keys:
+        - h: str | {name: str, ...props}
+        - t: str | {name: str, ...props}
+        - r: {type: str, ...props} | str
+        """
+
+        def _entity_from_value(v: Any) -> tuple[str, str | None, dict[str, Any]]:
+            if isinstance(v, str):
+                name = v.strip()
+                if not name:
+                    raise ValueError("entity name cannot be empty")
+                return name, None, {}
+            if isinstance(v, dict):
+                raw_name = v.get("name")
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    raise ValueError("entity object must have non-empty 'name'")
+                name = raw_name.strip()
+                # `entity_type` is a structural field and should be separated from normal properties.
+                # Also tolerate common typos like `enity_type`.
+                raw_type = v.get("entity_type") or v.get("enity_type")
+                entity_type: str | None
+                if isinstance(raw_type, str):
+                    entity_type = raw_type.strip() or None
+                else:
+                    entity_type = None
+
+                props = {
+                    k: vv
+                    for k, vv in v.items()
+                    if k not in {"name", "entity_type", "enity_type"}
+                }
+                return name, entity_type, props
+            raise ValueError("entity must be a string or an object with {name: ...}")
+
+        def _relation_from_value(v: Any) -> tuple[str, dict[str, Any]]:
+            if isinstance(v, str):
+                t = v.strip()
+                if not t:
+                    t = "RELATED_TO"
+                return t, {}
+            if isinstance(v, dict):
+                raw_t = v.get("type")
+                rel_type = raw_t.strip() if isinstance(raw_t, str) and raw_t.strip() else "RELATED_TO"
+                props = {k: vv for k, vv in v.items() if k != "type"}
+                return rel_type, props
+            raise ValueError("relation must be a string or an object with {type: ...}")
+
+        normalized_tag = (graph_tag or "").strip() or "default"
+
+        entities_created_or_updated = 0
+        relations_created_or_updated = 0
+        lines_ok = 0
+        errors: list[dict[str, Any]] = []
+
+        # Stream-read to avoid loading big files into memory.
+        line_no = 0
+        while True:
+            raw = await file.readline()
+            if not raw:
+                break
+            line_no += 1
+
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+
+            try:
+                obj = json.loads(line)
+                if not isinstance(obj, dict):
+                    raise ValueError("each line must be a JSON object")
+
+                h_name, h_type, h_props = _entity_from_value(obj.get("h"))
+                t_name, t_type, t_props = _entity_from_value(obj.get("t"))
+                r_type, r_props = _relation_from_value(obj.get("r"))
+
+                # Build descriptions for embeddings from properties (best-effort).
+                # Prefer human-readable fields and avoid mixing structural fields like entity_type into description.
+                def _desc_from_props(name: str, props: dict[str, Any]) -> str:
+                    for key in ("description", "介绍", "简介", "intro", "summary"):
+                        v = props.get(key)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    if not props:
+                        return ""
+                    # Avoid mixing structural/meta fields into description.
+                    skip_keys = {"graph_tag", "file_path", "source_id"}
+                    parts = []
+                    for k, v in props.items():
+                        if k in skip_keys or v is None:
+                            continue
+                        parts.append(f"{k}: {v}")
+                    return "；".join(parts)
+
+                h_desc = _desc_from_props(h_name, h_props)
+                t_desc = _desc_from_props(t_name, t_props)
+
+                await aupsert_entity(
+                    rag.chunk_entity_relation_graph,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    h_name,
+                    {
+                        **h_props,
+                        "description": h_desc,
+                        "entity_type": h_type or "UNKNOWN",
+                        "file_path": file_path,
+                        "source_id": "jsonl_import",
+                        "graph_tag": normalized_tag,
+                    },
+                )
+                entities_created_or_updated += 1
+
+                await aupsert_entity(
+                    rag.chunk_entity_relation_graph,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    t_name,
+                    {
+                        **t_props,
+                        "description": t_desc,
+                        "entity_type": t_type or "UNKNOWN",
+                        "file_path": file_path,
+                        "source_id": "jsonl_import",
+                        "graph_tag": normalized_tag,
+                    },
+                )
+                entities_created_or_updated += 1
+
+                rel_keywords = r_type
+                rel_desc_parts = [f"type: {r_type}"]
+                for k, v in r_props.items():
+                    if v is None:
+                        continue
+                    rel_desc_parts.append(f"{k}: {v}")
+                rel_desc = "；".join(rel_desc_parts)
+
+                await aupsert_relation(
+                    rag.chunk_entity_relation_graph,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    h_name,
+                    t_name,
+                    {
+                        "keywords": rel_keywords,
+                        "description": rel_desc,
+                        "file_path": file_path,
+                        "source_id": "jsonl_import",
+                        "graph_tag": normalized_tag,
+                        **r_props,
+                    },
+                )
+                relations_created_or_updated += 1
+
+                lines_ok += 1
+            except Exception as e:
+                errors.append(
+                    {
+                        "line": line_no,
+                        "error": str(e),
+                        "raw": line[:5000],
+                    }
+                )
+
+        return {
+            "status": "success" if not errors else "partial_success",
+            "graph_tag": normalized_tag,
+            "lines_ok": lines_ok,
+            "entities_upserted": entities_created_or_updated,
+            "relations_upserted": relations_created_or_updated,
+            "errors": errors[:50],
+            "errors_count": len(errors),
+        }
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(

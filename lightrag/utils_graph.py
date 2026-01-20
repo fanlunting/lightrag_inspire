@@ -11,6 +11,35 @@ from .utils import compute_mdhash_id, logger
 from .base import StorageNameSpace
 
 
+def _normalize_graph_tag(graph_tag: Any) -> str:
+    tag = str(graph_tag or "").strip()
+    return tag if tag else "default"
+
+
+def _tagged_entity_vdb_id(entity_name: str, graph_tag: str) -> str:
+    """
+    Generate a tag-scoped entity vector ID to avoid collisions across graph_tag.
+
+    Notes:
+    - We keep the legacy id (ent-hash(entity_name)) for backward compatibility.
+    - The tag-scoped id allows graph_tag-isolated retrieval/fusion workflows.
+    """
+    graph_tag = _normalize_graph_tag(graph_tag)
+    return compute_mdhash_id(f"{graph_tag}:{entity_name}", prefix="ent-")
+
+
+def _tagged_relation_vdb_id(src: str, tgt: str, graph_tag: str) -> str:
+    """
+    Generate a tag-scoped relation vector ID to avoid collisions across graph_tag.
+
+    Notes:
+    - Relation is undirected; caller should normalize src/tgt order first.
+    - We keep the legacy id (rel-hash(src+tgt)) for backward compatibility.
+    """
+    graph_tag = _normalize_graph_tag(graph_tag)
+    return compute_mdhash_id(f"{graph_tag}:{src}|{tgt}", prefix="rel-")
+
+
 async def _persist_graph_updates(
     entities_vdb=None,
     relationships_vdb=None,
@@ -219,6 +248,7 @@ async def adelete_by_relation(
             rel_ids_to_delete = [
                 compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
                 compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+                _tagged_relation_vdb_id(source_entity, target_entity, graph_tag=graph_tag),
             ]
 
             await relationships_vdb.delete(rel_ids_to_delete)
@@ -259,6 +289,7 @@ async def _edit_entity_impl(
     entity_name: str,
     updated_data: dict[str, str],
     *,
+    graph_tag: str = "default",
     entity_chunks_storage=None,
     relation_chunks_storage=None,
 ) -> dict[str, Any]:
@@ -288,13 +319,16 @@ async def _edit_entity_impl(
 
     original_entity_name = entity_name
 
-    node_exists = await chunk_entity_relation_graph.has_node(entity_name)
+    graph_tag = _normalize_graph_tag(graph_tag)
+    node_exists = await chunk_entity_relation_graph.has_node(entity_name, graph_tag=graph_tag)
     if not node_exists:
         raise ValueError(f"Entity '{entity_name}' does not exist")
-    node_data = await chunk_entity_relation_graph.get_node(entity_name)
+    node_data = await chunk_entity_relation_graph.get_node(entity_name, graph_tag=graph_tag)
 
     if is_renaming:
-        existing_node = await chunk_entity_relation_graph.has_node(new_entity_name)
+        existing_node = await chunk_entity_relation_graph.has_node(
+            new_entity_name, graph_tag=graph_tag
+        )
         if existing_node:
             raise ValueError(
                 f"Entity name '{new_entity_name}' already exists, cannot rename"
@@ -302,6 +336,7 @@ async def _edit_entity_impl(
 
     new_node_data = {**node_data, **updated_data}
     new_node_data["entity_id"] = new_entity_name
+    new_node_data["graph_tag"] = graph_tag
 
     if "entity_name" in new_node_data:
         del new_node_data[
@@ -315,16 +350,27 @@ async def _edit_entity_impl(
 
         relations_to_update = []
         relations_to_delete = []
-        edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
+        edges = await chunk_entity_relation_graph.get_node_edges(
+            entity_name, graph_tag=graph_tag
+        )
         if edges:
             for source, target in edges:
-                edge_data = await chunk_entity_relation_graph.get_edge(source, target)
+                edge_data = await chunk_entity_relation_graph.get_edge(
+                    source, target, graph_tag=graph_tag
+                )
                 if edge_data:
                     relations_to_delete.append(
                         compute_mdhash_id(source + target, prefix="rel-")
                     )
                     relations_to_delete.append(
                         compute_mdhash_id(target + source, prefix="rel-")
+                    )
+                    # Also delete tag-scoped relation embedding (normalized later when recreated).
+                    normalized_src, normalized_tgt = sorted([source, target])
+                    relations_to_delete.append(
+                        _tagged_relation_vdb_id(
+                            normalized_src, normalized_tgt, graph_tag=graph_tag
+                        )
                     )
                     if source == entity_name:
                         await chunk_entity_relation_graph.upsert_edge(
@@ -337,10 +383,10 @@ async def _edit_entity_impl(
                         )
                         relations_to_update.append((source, new_entity_name, edge_data))
 
-        await chunk_entity_relation_graph.delete_node(entity_name)
+        await chunk_entity_relation_graph.delete_node(entity_name, graph_tag=graph_tag)
 
         old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-        await entities_vdb.delete([old_entity_id])
+        await entities_vdb.delete([old_entity_id, _tagged_entity_vdb_id(entity_name, graph_tag=graph_tag)])
 
         await relationships_vdb.delete(relations_to_delete)
 
@@ -367,10 +413,22 @@ async def _edit_entity_impl(
                     "description": description,
                     "keywords": keywords,
                     "weight": weight,
+                    "graph_tag": graph_tag,
                 }
             }
 
-            await relationships_vdb.upsert(relation_data)
+            tagged_relation_id = _tagged_relation_vdb_id(
+                normalized_src, normalized_tgt, graph_tag=graph_tag
+            )
+            await relationships_vdb.upsert(
+                {
+                    **relation_data,
+                    tagged_relation_id: {
+                        **relation_data[relation_id],
+                        "embedding_scope": "graph_tag",
+                    },
+                }
+            )
 
         entity_name = new_entity_name
     else:
@@ -390,10 +448,17 @@ async def _edit_entity_impl(
             "source_id": source_id,
             "description": description,
             "entity_type": entity_type,
+            "graph_tag": graph_tag,
         }
     }
 
-    await entities_vdb.upsert(entity_data)
+    tagged_entity_id = _tagged_entity_vdb_id(entity_name, graph_tag=graph_tag)
+    await entities_vdb.upsert(
+        {
+            **entity_data,
+            tagged_entity_id: {**entity_data[entity_id], "embedding_scope": "graph_tag"},
+        }
+    )
 
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
         from .utils import make_relation_chunk_key, compute_incremental_chunk_ids
@@ -526,6 +591,7 @@ async def aedit_entity(
     updated_data: dict[str, str],
     allow_rename: bool = True,
     allow_merge: bool = False,
+    graph_tag: str = "default",
     entity_chunks_storage=None,
     relation_chunks_storage=None,
 ) -> dict[str, Any]:
@@ -578,6 +644,9 @@ async def aedit_entity(
     is_renaming = new_entity_name != entity_name
 
     lock_keys = sorted({entity_name, new_entity_name}) if is_renaming else [entity_name]
+    graph_tag = _normalize_graph_tag(graph_tag)
+    # Include graph_tag in lock keys to avoid cross-tag contention.
+    lock_keys = [f"{k}@{graph_tag}" for k in lock_keys]
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -634,6 +703,7 @@ async def aedit_entity(
                                 relationships_vdb,
                                 entity_name,
                                 non_name_updates,
+                                graph_tag=graph_tag,
                                 entity_chunks_storage=entity_chunks_storage,
                                 relation_chunks_storage=relation_chunks_storage,
                             )
@@ -706,6 +776,7 @@ async def aedit_entity(
                 relationships_vdb,
                 entity_name,
                 updated_data,
+                graph_tag=graph_tag,
                 entity_chunks_storage=entity_chunks_storage,
                 relation_chunks_storage=relation_chunks_storage,
             )
@@ -724,6 +795,7 @@ async def aedit_relation(
     source_entity: str,
     target_entity: str,
     updated_data: dict[str, Any],
+    graph_tag: str = "default",
     relation_chunks_storage=None,
 ) -> dict[str, Any]:
     """Asynchronously edit relation information.
@@ -747,30 +819,33 @@ async def aedit_relation(
     if source_entity > target_entity:
         source_entity, target_entity = target_entity, source_entity
 
+    graph_tag = _normalize_graph_tag(graph_tag)
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
     sorted_edge_key = sorted([source_entity, target_entity])
+    sorted_edge_key = [f"{k}@{graph_tag}" for k in sorted_edge_key]
     async with get_storage_keyed_lock(
         sorted_edge_key, namespace=namespace, enable_logging=False
     ):
         try:
             # 1. Get current relation information
             edge_exists = await chunk_entity_relation_graph.has_edge(
-                source_entity, target_entity
+                source_entity, target_entity, graph_tag=graph_tag
             )
             if not edge_exists:
                 raise ValueError(
                     f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 )
             edge_data = await chunk_entity_relation_graph.get_edge(
-                source_entity, target_entity
+                source_entity, target_entity, graph_tag=graph_tag
             )
             # Important: First delete the old relation record from the vector database
             # Delete both permutations to handle relationships created before normalization
             rel_ids_to_delete = [
                 compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
                 compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+                _tagged_relation_vdb_id(source_entity, target_entity, graph_tag=graph_tag),
             ]
             await relationships_vdb.delete(rel_ids_to_delete)
             logger.debug(
@@ -779,6 +854,7 @@ async def aedit_relation(
 
             # 2. Update relation information in the graph
             new_edge_data = {**edge_data, **updated_data}
+            new_edge_data["graph_tag"] = graph_tag
             await chunk_entity_relation_graph.upsert_edge(
                 source_entity, target_entity, new_edge_data
             )
@@ -807,11 +883,23 @@ async def aedit_relation(
                     "description": description,
                     "keywords": keywords,
                     "weight": weight,
+                    "graph_tag": graph_tag,
                 }
             }
 
             # Update vector database
-            await relationships_vdb.upsert(relation_data)
+            tagged_relation_id = _tagged_relation_vdb_id(
+                source_entity, target_entity, graph_tag=graph_tag
+            )
+            await relationships_vdb.upsert(
+                {
+                    **relation_data,
+                    tagged_relation_id: {
+                        **relation_data[relation_id],
+                        "embedding_scope": "graph_tag",
+                    },
+                }
+            )
 
             # 4. Update relation_chunks_storage in two scenarios:
             #    - source_id has changed (edit scenario)
@@ -930,23 +1018,32 @@ async def acreate_entity(
     # Use keyed lock for entity to ensure atomic graph and vector db operations
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    graph_tag = _normalize_graph_tag(entity_data.get("graph_tag", "default"))
     async with get_storage_keyed_lock(
-        [entity_name], namespace=namespace, enable_logging=False
+        [f"{entity_name}@{graph_tag}"], namespace=namespace, enable_logging=False
     ):
         try:
             # Check if entity already exists
-            existing_node = await chunk_entity_relation_graph.has_node(entity_name)
+            existing_node = await chunk_entity_relation_graph.has_node(
+                entity_name, graph_tag=graph_tag
+            )
             if existing_node:
                 raise ValueError(f"Entity '{entity_name}' already exists")
 
             # Prepare node data with defaults if missing
+            reserved = {"entity_name"}
+            extra_props = {
+                k: v for k, v in dict(entity_data).items() if k not in reserved
+            }
             node_data = {
                 "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
                 "source_id": entity_data.get("source_id", "manual_creation"),
                 "file_path": entity_data.get("file_path", "manual_creation"),
+                "graph_tag": graph_tag,
                 "created_at": int(time.time()),
+                **extra_props,
             }
 
             # Add entity to knowledge graph
@@ -970,11 +1067,21 @@ async def acreate_entity(
                     "description": description,
                     "entity_type": entity_type,
                     "file_path": entity_data.get("file_path", "manual_creation"),
+                    "graph_tag": graph_tag,
                 }
             }
 
             # Update vector database
-            await entities_vdb.upsert(entity_data_for_vdb)
+            tagged_entity_id = _tagged_entity_vdb_id(entity_name, graph_tag=graph_tag)
+            await entities_vdb.upsert(
+                {
+                    **entity_data_for_vdb,
+                    tagged_entity_id: {
+                        **entity_data_for_vdb[entity_id],
+                        "embedding_scope": "graph_tag",
+                    },
+                }
+            )
 
             # Update entity_chunks_storage to track chunk references
             if entity_chunks_storage is not None:
@@ -1044,14 +1151,21 @@ async def acreate_relation(
     # Use keyed lock for relation to ensure atomic graph and vector db operations
     workspace = relationships_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    graph_tag = _normalize_graph_tag(relation_data.get("graph_tag", "default"))
     sorted_edge_key = sorted([source_entity, target_entity])
     async with get_storage_keyed_lock(
-        sorted_edge_key, namespace=namespace, enable_logging=False
+        [f"{k}@{graph_tag}" for k in sorted_edge_key],
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
             # Check if both entities exist
-            source_exists = await chunk_entity_relation_graph.has_node(source_entity)
-            target_exists = await chunk_entity_relation_graph.has_node(target_entity)
+            source_exists = await chunk_entity_relation_graph.has_node(
+                source_entity, graph_tag=graph_tag
+            )
+            target_exists = await chunk_entity_relation_graph.has_node(
+                target_entity, graph_tag=graph_tag
+            )
 
             if not source_exists:
                 raise ValueError(f"Source entity '{source_entity}' does not exist")
@@ -1060,7 +1174,7 @@ async def acreate_relation(
 
             # Check if relation already exists
             existing_edge = await chunk_entity_relation_graph.has_edge(
-                source_entity, target_entity
+                source_entity, target_entity, graph_tag=graph_tag
             )
             if existing_edge:
                 raise ValueError(
@@ -1068,13 +1182,19 @@ async def acreate_relation(
                 )
 
             # Prepare edge data with defaults if missing
+            reserved = set()
+            extra_props = {
+                k: v for k, v in dict(relation_data).items() if k not in reserved
+            }
             edge_data = {
                 "description": relation_data.get("description", ""),
                 "keywords": relation_data.get("keywords", ""),
                 "source_id": relation_data.get("source_id", "manual_creation"),
                 "weight": float(relation_data.get("weight", 1.0)),
                 "file_path": relation_data.get("file_path", "manual_creation"),
+                "graph_tag": graph_tag,
                 "created_at": int(time.time()),
+                **extra_props,
             }
 
             # Add relation to knowledge graph
@@ -1111,11 +1231,23 @@ async def acreate_relation(
                     "keywords": keywords,
                     "weight": weight,
                     "file_path": relation_data.get("file_path", "manual_creation"),
+                    "graph_tag": graph_tag,
                 }
             }
 
             # Update vector database
-            await relationships_vdb.upsert(relation_data_for_vdb)
+            tagged_relation_id = _tagged_relation_vdb_id(
+                source_entity, target_entity, graph_tag=graph_tag
+            )
+            await relationships_vdb.upsert(
+                {
+                    **relation_data_for_vdb,
+                    tagged_relation_id: {
+                        **relation_data_for_vdb[relation_id],
+                        "embedding_scope": "graph_tag",
+                    },
+                }
+            )
 
             # Update relation_chunks_storage to track chunk references
             if relation_chunks_storage is not None:
@@ -1163,6 +1295,213 @@ async def acreate_relation(
                 f"Error while creating relation from '{source_entity}' to '{target_entity}': {e}"
             )
             raise
+
+
+async def aupsert_entity(
+    chunk_entity_relation_graph,
+    entities_vdb,
+    relationships_vdb,
+    entity_name: str,
+    entity_data: dict[str, Any],
+    *,
+    entity_chunks_storage=None,
+    relation_chunks_storage=None,
+) -> dict[str, Any]:
+    """
+    Upsert an entity with graph_tag isolation.
+
+    - If the entity exists in the same graph_tag: merge properties and re-embed.
+    - If not: create it.
+    """
+    graph_tag = _normalize_graph_tag(entity_data.get("graph_tag", "default"))
+
+    workspace = entities_vdb.global_config.get("workspace", "")
+    namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    async with get_storage_keyed_lock(
+        [f"{entity_name}@{graph_tag}"], namespace=namespace, enable_logging=False
+    ):
+        existing = await chunk_entity_relation_graph.get_node(
+            entity_name, graph_tag=graph_tag
+        )
+        now = int(time.time())
+
+        reserved = {"entity_name"}
+        extra_props = {k: v for k, v in dict(entity_data).items() if k not in reserved}
+        base = {
+            "entity_id": entity_name,
+            "entity_type": entity_data.get("entity_type", "UNKNOWN"),
+            "description": entity_data.get("description", ""),
+            "source_id": entity_data.get("source_id", "jsonl_import"),
+            "file_path": entity_data.get("file_path", "jsonl_import"),
+            "graph_tag": graph_tag,
+        }
+        merged = {**(existing or {}), **base, **extra_props}
+        merged.setdefault("created_at", now)
+        merged["updated_at"] = now
+
+        await chunk_entity_relation_graph.upsert_node(entity_name, merged)
+
+        description = str(merged.get("description") or "")
+        content = entity_name + "\n" + description
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+        entity_data_for_vdb = {
+            entity_id: {
+                "content": content,
+                "entity_name": entity_name,
+                "source_id": merged.get("source_id", ""),
+                "description": description,
+                "entity_type": merged.get("entity_type", "UNKNOWN"),
+                "file_path": merged.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            }
+        }
+        tagged_entity_id = _tagged_entity_vdb_id(entity_name, graph_tag=graph_tag)
+        await entities_vdb.upsert(
+            {
+                **entity_data_for_vdb,
+                tagged_entity_id: {
+                    **entity_data_for_vdb[entity_id],
+                    "embedding_scope": "graph_tag",
+                },
+            }
+        )
+
+        await _persist_graph_updates(
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+            chunk_entity_relation_graph=chunk_entity_relation_graph,
+            entity_chunks_storage=entity_chunks_storage,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+
+        return await get_entity_info(
+            chunk_entity_relation_graph,
+            entities_vdb,
+            entity_name,
+            include_vector_data=True,
+        )
+
+
+async def aupsert_relation(
+    chunk_entity_relation_graph,
+    entities_vdb,
+    relationships_vdb,
+    source_entity: str,
+    target_entity: str,
+    relation_data: dict[str, Any],
+    *,
+    relation_chunks_storage=None,
+) -> dict[str, Any]:
+    """
+    Upsert a relation with graph_tag isolation.
+
+    - If edge exists in the same graph_tag: merge properties and re-embed.
+    - If not: create it.
+    - If endpoints are missing in this graph_tag: auto-create UNKNOWN nodes in this graph_tag.
+    """
+    graph_tag = _normalize_graph_tag(relation_data.get("graph_tag", "default"))
+
+    # Normalize relation key order for locking and vector IDs.
+    lock_src, lock_tgt = sorted([source_entity, target_entity])
+
+    workspace = relationships_vdb.global_config.get("workspace", "")
+    namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    async with get_storage_keyed_lock(
+        [f"{lock_src}@{graph_tag}", f"{lock_tgt}@{graph_tag}"],
+        namespace=namespace,
+        enable_logging=False,
+    ):
+        # Ensure both endpoints exist in this graph_tag.
+        for ent in (source_entity, target_entity):
+            exists = await chunk_entity_relation_graph.has_node(ent, graph_tag=graph_tag)
+            if not exists:
+                await chunk_entity_relation_graph.upsert_node(
+                    ent,
+                    {
+                        "entity_id": ent,
+                        "entity_type": "UNKNOWN",
+                        "description": "UNKNOWN",
+                        "source_id": "jsonl_import",
+                        "file_path": "jsonl_import",
+                        "graph_tag": graph_tag,
+                        "created_at": int(time.time()),
+                    },
+                )
+
+        existing_edge = await chunk_entity_relation_graph.get_edge(
+            source_entity, target_entity, graph_tag=graph_tag
+        )
+
+        now = int(time.time())
+        reserved = set()
+        extra_props = {k: v for k, v in dict(relation_data).items() if k not in reserved}
+        base_edge = {
+            "description": relation_data.get("description", ""),
+            "keywords": relation_data.get("keywords", ""),
+            "source_id": relation_data.get("source_id", "jsonl_import"),
+            "weight": float(relation_data.get("weight", 1.0)),
+            "file_path": relation_data.get("file_path", "jsonl_import"),
+            "graph_tag": graph_tag,
+        }
+        merged_edge = {**(existing_edge or {}), **base_edge, **extra_props}
+        merged_edge.setdefault("created_at", now)
+        merged_edge["updated_at"] = now
+
+        await chunk_entity_relation_graph.upsert_edge(
+            source_entity, target_entity, merged_edge
+        )
+
+        # Normalize order for relation embedding id/content.
+        norm_src, norm_tgt = sorted([source_entity, target_entity])
+        description = str(merged_edge.get("description") or "")
+        keywords = str(merged_edge.get("keywords") or "")
+        source_id = str(merged_edge.get("source_id") or "")
+        weight = float(merged_edge.get("weight", 1.0))
+        content = f"{keywords}\t{norm_src}\n{norm_tgt}\n{description}"
+
+        legacy_rel_id = compute_mdhash_id(norm_src + norm_tgt, prefix="rel-")
+        tagged_rel_id = _tagged_relation_vdb_id(norm_src, norm_tgt, graph_tag=graph_tag)
+        relation_data_for_vdb = {
+            legacy_rel_id: {
+                "content": content,
+                "src_id": norm_src,
+                "tgt_id": norm_tgt,
+                "source_id": source_id,
+                "description": description,
+                "keywords": keywords,
+                "weight": weight,
+                "file_path": merged_edge.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            },
+            tagged_rel_id: {
+                "content": content,
+                "src_id": norm_src,
+                "tgt_id": norm_tgt,
+                "source_id": source_id,
+                "description": description,
+                "keywords": keywords,
+                "weight": weight,
+                "file_path": merged_edge.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+                "embedding_scope": "graph_tag",
+            },
+        }
+
+        await relationships_vdb.upsert(relation_data_for_vdb)
+
+        await _persist_graph_updates(
+            relationships_vdb=relationships_vdb,
+            chunk_entity_relation_graph=chunk_entity_relation_graph,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+
+        return await get_relation_info(
+            chunk_entity_relation_graph,
+            relationships_vdb,
+            source_entity,
+            target_entity,
+            include_vector_data=True,
+        )
 
 
 async def _merge_entities_impl(
