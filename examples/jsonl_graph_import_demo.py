@@ -89,13 +89,16 @@ def _relation_from_value(v):
 
 
 def _desc_from_props(props: dict) -> str:
-    if "description" in props and isinstance(props["description"], str):
-        return props["description"]
+    for key in ("description", "介绍", "简介", "intro", "summary"):
+        v = props.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     if not props:
         return ""
+    skip_keys = {"entity_type", "graph_tag", "file_path", "source_id"}
     parts = []
     for k, v in props.items():
-        if v is None:
+        if k in skip_keys or v is None:
             continue
         parts.append(f"{k}: {v}")
     return "；".join(parts)

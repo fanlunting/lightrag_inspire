@@ -366,14 +366,23 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 r_type, r_props = _relation_from_value(obj.get("r"))
 
                 # Build descriptions for embeddings from properties (best-effort).
+                # Prefer human-readable fields and avoid mixing structural fields like entity_type into description.
                 def _desc_from_props(name: str, props: dict[str, Any]) -> str:
-                    if "description" in props and isinstance(props["description"], str):
-                        return props["description"]
+                    for key in ("description", "介绍", "简介", "intro", "summary"):
+                        v = props.get(key)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
                     if not props:
                         return ""
+                    skip_keys = {
+                        "entity_type",
+                        "graph_tag",
+                        "file_path",
+                        "source_id",
+                    }
                     parts = []
                     for k, v in props.items():
-                        if v is None:
+                        if k in skip_keys or v is None:
                             continue
                         parts.append(f"{k}: {v}")
                     return "；".join(parts)
