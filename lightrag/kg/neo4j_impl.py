@@ -355,10 +355,10 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         """
-        Check if a node with the given label exists in the database
+        Check if a node with the given `entity_id` exists in the database.
 
         Args:
-            node_id: Label of the node to check
+            node_id: The node `entity_id` value to check
 
         Returns:
             bool: True if node exists, False otherwise
@@ -377,7 +377,27 @@ class Neo4JStorage(BaseGraphStorage):
                 result = await session.run(query, entity_id=node_id)
                 single_result = await result.single()
                 await result.consume()  # Ensure result is fully consumed
-                return single_result["node_exists"]
+                exists: bool = single_result["node_exists"]
+                if not exists:
+                    # Diagnose common misconfiguration: node exists but is not labeled with workspace label.
+                    diag_query = (
+                        "MATCH (n {entity_id: $entity_id}) "
+                        "RETURN labels(n) AS labels "
+                        "LIMIT 1"
+                    )
+                    diag_result = await session.run(diag_query, entity_id=node_id)
+                    try:
+                        diag_record = await diag_result.single()
+                        if diag_record:
+                            labels = diag_record.get("labels", [])
+                            logger.warning(
+                                f"[{self.workspace}] Node with entity_id '{node_id}' exists but is missing workspace label "
+                                f"'{workspace_label}'. labels={labels}. "
+                                "Fix by setting NEO4J_WORKSPACE consistently for ingest/query, or by adding the workspace label to nodes."
+                            )
+                    finally:
+                        await diag_result.consume()
+                return exists
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error checking node existence for {node_id}: {str(e)}"
@@ -428,10 +448,10 @@ class Neo4JStorage(BaseGraphStorage):
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get node by its label identifier, return only node properties
+        """Get a node by its `entity_id`, return only node properties.
 
         Args:
-            node_id: The node label to look up
+            node_id: The node `entity_id` to look up
 
         Returns:
             dict: Node properties if found
@@ -457,7 +477,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                     if len(records) > 1:
                         logger.warning(
-                            f"[{self.workspace}] Multiple nodes found with label '{node_id}'. Using first node."
+                            f"[{self.workspace}] Multiple nodes found with entity_id '{node_id}' in workspace label '{workspace_label}'. Using first node."
                         )
                     if records:
                         node = records[0]["n"]
@@ -471,6 +491,24 @@ class Neo4JStorage(BaseGraphStorage):
                             ]
                         # logger.debug(f"Neo4j query node {query} return: {node_dict}")
                         return node_dict
+                    # Diagnose common misconfiguration: node exists but is not labeled with workspace label.
+                    diag_query = (
+                        "MATCH (n {entity_id: $entity_id}) "
+                        "RETURN labels(n) AS labels "
+                        "LIMIT 1"
+                    )
+                    diag_result = await session.run(diag_query, entity_id=node_id)
+                    try:
+                        diag_record = await diag_result.single()
+                        if diag_record:
+                            labels = diag_record.get("labels", [])
+                            logger.warning(
+                                f"[{self.workspace}] No node found with entity_id '{node_id}' in workspace label '{workspace_label}', "
+                                f"but a node with that entity_id exists. labels={labels}. "
+                                "Fix by setting NEO4J_WORKSPACE consistently for ingest/query, or by adding the workspace label to nodes."
+                            )
+                    finally:
+                        await diag_result.consume()
                     return None
                 finally:
                     await result.consume()  # Ensure result is fully consumed
@@ -517,12 +555,12 @@ class Neo4JStorage(BaseGraphStorage):
             return nodes
 
     async def node_degree(self, node_id: str) -> int:
-        """Get the degree (number of relationships) of a node with the given label.
+        """Get the degree (number of relationships) of a node with the given `entity_id`.
         If multiple nodes have the same label, returns the degree of the first node.
         If no node is found, returns 0.
 
         Args:
-            node_id: The label of the node
+            node_id: The node `entity_id`
 
         Returns:
             int: The number of relationships the node has, or 0 if no node found
@@ -547,8 +585,26 @@ class Neo4JStorage(BaseGraphStorage):
 
                     if not record:
                         logger.warning(
-                            f"[{self.workspace}] No node found with label '{node_id}'"
+                            f"[{self.workspace}] No node found with entity_id '{node_id}' in workspace label '{workspace_label}'"
                         )
+                        # Diagnose common misconfiguration: node exists but is not labeled with workspace label.
+                        diag_query = (
+                            "MATCH (n {entity_id: $entity_id}) "
+                            "RETURN labels(n) AS labels "
+                            "LIMIT 1"
+                        )
+                        diag_result = await session.run(diag_query, entity_id=node_id)
+                        try:
+                            diag_record = await diag_result.single()
+                            if diag_record:
+                                labels = diag_record.get("labels", [])
+                                logger.warning(
+                                    f"[{self.workspace}] Node with entity_id '{node_id}' exists but is missing workspace label "
+                                    f"'{workspace_label}'. labels={labels}. "
+                                    "Fix by setting NEO4J_WORKSPACE consistently for ingest/query, or by adding the workspace label to nodes."
+                                )
+                        finally:
+                            await diag_result.consume()
                         return 0
 
                     degree = record["degree"]
@@ -592,11 +648,33 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()  # Ensure result is fully consumed
 
             # For any node_id that did not return a record, set degree to 0.
-            for nid in node_ids:
-                if nid not in degrees:
-                    logger.warning(
-                        f"[{self.workspace}] No node found with label '{nid}'"
-                    )
+            missing_ids = [nid for nid in node_ids if nid not in degrees]
+            if missing_ids:
+                # Batch-diagnose: nodes may exist but be missing the workspace label.
+                diag_query = """
+                    UNWIND $ids AS id
+                    MATCH (n {entity_id: id})
+                    RETURN id AS entity_id, labels(n) AS labels
+                """
+                diag_result = await session.run(diag_query, ids=missing_ids)
+                try:
+                    existing_labels_by_id: dict[str, list[str]] = {}
+                    async for record in diag_result:
+                        existing_labels_by_id[record["entity_id"]] = record["labels"]
+                finally:
+                    await diag_result.consume()
+
+                for nid in missing_ids:
+                    if nid in existing_labels_by_id:
+                        logger.warning(
+                            f"[{self.workspace}] No node found with entity_id '{nid}' in workspace label '{workspace_label}', "
+                            f"but a node with that entity_id exists. labels={existing_labels_by_id[nid]}. "
+                            "Fix by setting NEO4J_WORKSPACE consistently for ingest/query, or by adding the workspace label to nodes."
+                        )
+                    else:
+                        logger.warning(
+                            f"[{self.workspace}] No node found with entity_id '{nid}' in workspace label '{workspace_label}'"
+                        )
                     degrees[nid] = 0
 
             # logger.debug(f"[{self.workspace}] Neo4j batch node degree query returned: {degrees}")
