@@ -4780,3 +4780,243 @@ class LightRAG:
             relation_types=relation_types,
             language=language,
         )
+    
+    async def amerge_graph_whole(self,
+        graph_tags: list[str],
+        target_graph_tag: str | None = None) -> dict[str, Any]:
+        """融合指定的图谱到新的图谱中
+        
+        将 graph_tags=[A, B] 的所有节点和边复制到新的 graph_tag=C。
+        
+        Args:
+            graph_tags: 源图谱标签列表，至少需要2个
+            target_graph_tag: 目标图谱标签，如果为None则自动生成
+            
+        Returns:
+            包含统计信息的字典：
+            - target_graph_tag: 新创建的 graph_tag
+            - source_graph_tags: 源 graph_tags 列表
+            - nodes_copied: 复制的节点数量
+            - edges_copied: 复制的边数量
+            - nodes_merged: 合并的节点数量（同一entity_id在多个源tag中都存在）
+        """
+        if not graph_tags or len(graph_tags) < 2:
+            raise ValueError("lightrag::amerge_graph_whole(): graph_tags cannot be empty or less than 2")
+        normalized_tags = [tag.strip() for tag in graph_tags if tag and tag.strip()]
+        if not normalized_tags or len(normalized_tags) < 2:
+            raise ValueError("lightrag::amerge_graph_whole(): graph_tags must contain non-empty values and at least 2")
+        
+        # 生成目标 graph_tag
+        if target_graph_tag is None:
+            target_graph_tag = (
+                "_".join(sorted(set(normalized_tags))).replace(" ", "_")
+            )
+        else:
+            target_graph_tag = target_graph_tag.strip()
+            if not target_graph_tag:
+                raise ValueError("lightrag::amerge_graph_whole(): target_graph_tag cannot be empty")
+        
+        logger.info(f"amerge_graph_whole(): source_tags={normalized_tags}")
+        
+        def _split(value: Any) -> list[str]:
+            """将 graph_tag 字段值拆分为列表"""
+            if not value:
+                return []
+            if isinstance(value, str):
+                return [p for p in value.split(GRAPH_FIELD_SEP) if p]
+            if isinstance(value, list):
+                return [str(v) for v in value if str(v)]
+            return [str(value)]
+        
+        def _has_tag(entity: dict[str, Any]) -> bool:
+            """判断节点/边是否属于指定的任一 graph_tag"""
+            tags = _split(entity.get("graph_tag")) or ["default"]
+            return any(tag in normalized_tags for tag in tags)
+        
+        def _join(values: list[str]) -> str:
+            """合并值列表，去重并保持顺序"""
+            seen, ordered = set(), []
+            for item in values:
+                if item and item not in seen:
+                    seen.add(item)
+                    ordered.append(item)
+            return GRAPH_FIELD_SEP.join(ordered)
+        
+        # 获取所有节点和边
+        graph_db_lock = get_graph_db_lock(enable_logging=False)
+        async with graph_db_lock:
+            # 尝试使用 graph_tags 参数，如果不支持则回退到获取所有后过滤
+            try:
+                all_nodes = await self.chunk_entity_relation_graph.get_all_nodes_by_graph_tags(graph_tags=normalized_tags)
+                all_edges = await self.chunk_entity_relation_graph.get_all_edges_by_graph_tags(graph_tags=normalized_tags)
+            except TypeError:
+                # 如果不支持 graph_tags 参数，获取所有后手动过滤
+                all_nodes_raw = await self.chunk_entity_relation_graph.get_all_nodes()
+                all_edges_raw = await self.chunk_entity_relation_graph.get_all_edges()
+                all_nodes = [n for n in all_nodes_raw if _has_tag(n)]
+                all_edges = [e for e in all_edges_raw if _has_tag(e)]
+        
+        if not all_nodes:
+            raise ValueError(f"No nodes found for tags {normalized_tags}")
+        
+        logger.info(f"amerge_graph_whole(): found {len(all_nodes)} nodes and {len(all_edges)} edges from source tags")
+        
+        # 按 entity_id 分组节点，合并同一 entity_id 的属性
+        # 需要合并的属性（使用 GRAPH_FIELD_SEP 分隔）
+        mergeable_attributes = {"entity_type", "description", "file_path", "source_id"}
+        # 需要跳过的属性（系统字段，不需要合并）
+        skip_attributes = {"entity_id", "id", "graph_tag", "created_at", "updated_at"}
+        
+        node_clusters: dict[str, dict[str, Any]] = {}
+        for node in all_nodes:
+            entity_id = node.get("entity_id") or node.get("id")
+            if not entity_id:
+                continue
+            
+            if entity_id not in node_clusters:
+                node_clusters[entity_id] = {
+                    "base": dict(node),
+                    "mergeable_attrs": {attr: [] for attr in mergeable_attributes},
+                    "other_attrs": {},  # 其他属性的第一个值
+                    "graph_tag": set(),
+                }
+            
+            cluster = node_clusters[entity_id]
+            cluster["graph_tag"].update(_split(node.get("graph_tag")))
+            
+            # 处理所有属性
+            for key, value in node.items():
+                if key in skip_attributes:
+                    continue
+                
+                if key in mergeable_attributes:
+                    # 需要合并的属性：使用 extend 收集所有值
+                    if value:
+                        cluster["mergeable_attrs"][key].extend(_split(value))
+                else:
+                    # 其他属性：保留第一个非空值
+                    if key not in cluster["other_attrs"] and value:
+                        cluster["other_attrs"][key] = []
+                        cluster["other_attrs"][key].append(value)
+                    else:
+                        cluster["other_attrs"][key].append(value)
+        
+        # 复制节点到新的 graph_tag
+        nodes_copied = 0
+        nodes_merged = 0
+        async with graph_db_lock:
+            for entity_id, cluster_data in node_clusters.items():
+                payload = dict(cluster_data["base"])
+                payload["entity_id"] = entity_id
+                payload["graph_tag"] = target_graph_tag
+                payload["merged_from_graph_tags"] = _join(list(cluster_data["graph_tag"]))
+                payload["updated_at"] = int(time.time())
+                
+                # 合并需要合并的属性（使用 GRAPH_FIELD_SEP 连接）
+                for attr, values in cluster_data["mergeable_attrs"].items():
+                    if values:
+                        payload[attr] = _join(values)
+                
+                # 添加其他属性（保留第一个非空值）
+                for key, values in cluster_data["other_attrs"].items():
+                    if values:
+                        payload[key] = _join(values)
+                
+                await self.chunk_entity_relation_graph.upsert_node(entity_id, payload)
+                nodes_copied += 1
+                if len(cluster_data["graph_tag"]) > 1:
+                    nodes_merged += 1
+        
+        logger.info(f"amerge_graph_whole(): copied {nodes_copied} nodes ({nodes_merged} merged)")
+        
+        # 复制边到新的 graph_tag
+        # 先收集所有边，按边键分组以合并属性
+        edge_clusters: dict[tuple[str, str, str], dict[str, Any]] = {}
+        edges_skipped = 0
+        
+        for edge in all_edges:
+            source_id = edge.get("source") or edge.get("source_id")
+            target_id = edge.get("target") or edge.get("target_id")
+            
+            if not source_id or not target_id:
+                edges_skipped += 1
+                continue
+            
+            # 检查节点是否已复制（应该在 node_clusters 中）
+            if source_id not in node_clusters or target_id not in node_clusters:
+                edges_skipped += 1
+                logger.warning(
+                    f"amerge_graph_whole(): skipping edge {source_id} -> {target_id}, "
+                    f"node not found in source tags"
+                )
+                continue
+            
+            # 构建边键
+            relationship_type = edge.get("relationship_type", "DIRECTED")
+            edge_key = (source_id, target_id, relationship_type)
+            
+            # 初始化边集群
+            if edge_key not in edge_clusters:
+                edge_clusters[edge_key] = {
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "relationship_type": relationship_type,
+                    "source_ids": [],
+                    "file_paths": [],
+                    "other_properties": {},
+                }
+            
+            cluster = edge_clusters[edge_key]
+            
+            # 收集 source_id 和 file_path
+            if "source_id" in edge and edge["source_id"]:
+                cluster["source_ids"].extend(_split(edge["source_id"]))
+            if "file_path" in edge and edge["file_path"]:
+                cluster["file_paths"].extend(_split(edge["file_path"]))
+            
+            # 收集其他属性（使用第一个遇到的边的属性）
+            for key, value in edge.items():
+                if key not in ("source", "target", "source_id", "target_id", "relationship_type", "graph_tag"):
+                    if key not in cluster["other_properties"]:
+                        cluster["other_properties"][key] = value
+        
+        # 写入合并后的边
+        edges_copied = 0
+        async with graph_db_lock:
+            for edge_key, cluster_data in edge_clusters.items():
+                edge_properties = {
+                    "relationship_type": cluster_data["relationship_type"],
+                    "graph_tag": target_graph_tag,
+                }
+                
+                # 合并 source_id 和 file_path
+                if cluster_data["source_ids"]:
+                    edge_properties["source_id"] = _join(cluster_data["source_ids"])
+                if cluster_data["file_paths"]:
+                    edge_properties["file_path"] = _join(cluster_data["file_paths"])
+                
+                # 添加其他属性
+                edge_properties.update(cluster_data["other_properties"])
+                
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    cluster_data["source_id"],
+                    cluster_data["target_id"],
+                    edge_properties,
+                )
+                edges_copied += 1
+        
+        logger.info(f"amerge_graph_whole(): copied {edges_copied} edges ({edges_skipped} skipped)")
+        
+        # 调用索引完成回调
+        async with graph_db_lock:
+            await self.chunk_entity_relation_graph.index_done_callback()
+        
+        return {
+            "target_graph_tag": target_graph_tag,
+            "source_graph_tags": normalized_tags,
+            "nodes_copied": nodes_copied,
+            "edges_copied": edges_copied,
+            "nodes_merged": nodes_merged,
+            "edges_skipped": edges_skipped,
+        }
+        

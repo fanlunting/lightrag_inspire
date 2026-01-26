@@ -687,6 +687,62 @@ export const uploadDocument = async (
   return response.data
 }
 
+export type ImportJsonlResponse = {
+  status: 'success' | 'partial_success'
+  graph_tag: string
+  lines_ok: number
+  entities_upserted: number
+  relations_upserted: number
+  errors: Array<{
+    line: number
+    error: string
+    raw: string
+  }>
+  errors_count: number
+}
+
+export const importGraphFromJsonl = async (
+  file: File,
+  onUploadProgress?: (percentCompleted: number) => void,
+  graphTag?: string,
+  filePath?: string
+): Promise<ImportJsonlResponse> => {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (graphTag && graphTag.trim()) {
+    formData.append('graph_tag', graphTag.trim())
+  }
+  if (filePath && filePath.trim()) {
+    formData.append('file_path', filePath.trim())
+  }
+
+  // Set a longer timeout for JSONL import (5 minutes) as it may take time to process
+  const timeout = 5 * 60 * 1000 // 5 minutes
+
+  const response = await axiosInstance.post('/graph/import/jsonl', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    timeout,
+    // prettier-ignore
+    onUploadProgress:
+      onUploadProgress !== undefined
+        ? (progressEvent) => {
+          // Upload progress: 0-90% for file upload, remaining 10% is for processing
+          const uploadPercent = Math.round((progressEvent.loaded * 90) / progressEvent.total!)
+          onUploadProgress(uploadPercent)
+        }
+        : undefined
+  })
+  
+  // After upload completes, set progress to 100% if callback provided
+  if (onUploadProgress) {
+    onUploadProgress(100)
+  }
+  
+  return response.data
+}
+
 export const batchUploadDocuments = async (
   files: File[],
   onUploadProgress?: (fileName: string, percentCompleted: number) => void

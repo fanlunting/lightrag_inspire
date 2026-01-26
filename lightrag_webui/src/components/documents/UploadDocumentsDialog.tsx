@@ -13,7 +13,7 @@ import Input from '@/components/ui/Input'
 import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { uploadDocument } from '@/api/lightrag'
+import { uploadDocument, importGraphFromJsonl } from '@/api/lightrag'
 
 import { UploadIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -97,6 +97,8 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
               [file.name]: 0
             }))
 
+            // All files (including .jsonl) now use the document upload API
+            // JSONL files will be processed in the background by the backend
             const result = await uploadDocument(file, (percentCompleted: number) => {
               console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
               setProgresses((pre) => ({

@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.utils import generate_track_id
+from lightrag.utils import generate_track_id, compute_mdhash_id, get_content_summary
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -785,6 +785,7 @@ class DocumentManager:
             ".htm",  # HyperText Markup Language
             ".csv",  # Comma-Separated Values
             ".json",  # JavaScript Object Notation
+            ".jsonl",  # JSON Lines (Knowledge Graph format)
             ".xml",  # eXtensible Markup Language
             ".yaml",  # YAML Ain't Markup Language
             ".yml",  # YAML
@@ -1121,6 +1122,259 @@ async def pipeline_enqueue_file(
         # Process based on file type
         try:
             match ext:
+                case ".jsonl":
+                    # JSONL files are processed as knowledge graph imports, not as documents
+                    # Import the JSONL file directly into the knowledge graph
+                    from lightrag.utils_graph import aupsert_entity, aupsert_relation
+                    import json
+                    
+                    try:
+                        # Read and process JSONL file line by line
+                        content_str = file.decode("utf-8", errors="replace")
+                        lines = content_str.splitlines()
+                        
+                        entities_created_or_updated = 0
+                        relations_created_or_updated = 0
+                        lines_ok = 0
+                        errors: list[dict[str, Any]] = []
+                        
+                        def _entity_from_value(v: Any) -> tuple[str, str | None, dict[str, Any]]:
+                            if isinstance(v, str):
+                                name = v.strip()
+                                if not name:
+                                    raise ValueError("entity name cannot be empty")
+                                return name, None, {}
+                            if isinstance(v, dict):
+                                raw_name = v.get("name")
+                                if not isinstance(raw_name, str) or not raw_name.strip():
+                                    raise ValueError("entity object must have non-empty 'name'")
+                                name = raw_name.strip()
+                                # Try multiple possible field names for entity_type
+                                raw_type = (
+                                    v.get("entity_type") 
+                                    or v.get("enity_type")  # typo tolerance
+                                    or v.get("Entity_Type")  # case variation
+                                    or v.get("entityType")  # camelCase
+                                )
+                                entity_type: str | None
+                                if raw_type is not None:
+                                    # Convert to string if not already, then strip
+                                    if isinstance(raw_type, str):
+                                        stripped = raw_type.strip()
+                                        entity_type = stripped if stripped else None
+                                    else:
+                                        # Convert non-string types to string
+                                        entity_type = str(raw_type).strip() or None
+                                else:
+                                    entity_type = None
+                                props = {
+                                    k: vv
+                                    for k, vv in v.items()
+                                    if k not in {"name", "entity_type", "enity_type", "Entity_Type", "entityType"}
+                                }
+                                return name, entity_type, props
+                            raise ValueError("entity must be a string or an object with {name: ...}")
+                        
+                        def _relation_from_value(v: Any) -> tuple[str, dict[str, Any]]:
+                            if isinstance(v, str):
+                                t = v.strip()
+                                if not t:
+                                    t = "RELATED_TO"
+                                return t, {}
+                            if isinstance(v, dict):
+                                raw_t = v.get("type")
+                                rel_type = raw_t.strip() if isinstance(raw_t, str) and raw_t.strip() else "RELATED_TO"
+                                props = {k: vv for k, vv in v.items() if k != "type"}
+                                return rel_type, props
+                            raise ValueError("relation must be a string or an object with {type: ...}")
+                        
+                        def _desc_from_props(name: str, props: dict[str, Any]) -> str:
+                            for key in ("description", "介绍", "简介", "intro", "summary", "desc"):
+                                v = props.get(key)
+                                if isinstance(v, str) and v.strip():
+                                    return v.strip()
+                            if not props:
+                                return ""
+                            skip_keys = {"graph_tag", "file_path", "source_id"}
+                            parts = []
+                            for k, v in props.items():
+                                if k in skip_keys or v is None:
+                                    continue
+                                parts.append(f"{k}: {v}")
+                            return "；".join(parts)
+                        
+                        # Phase 1: Parse all lines and collect entities/relations
+                        entities_to_upsert: dict[str, dict[str, Any]] = {}  # entity_name -> entity_data
+                        relations_to_upsert: list[tuple[str, str, dict[str, Any]]] = []  # (h_name, t_name, rel_data)
+                        
+                        for line_no, line in enumerate(lines, start=1):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            
+                            try:
+                                obj = json.loads(line)
+                                if not isinstance(obj, dict):
+                                    raise ValueError("each line must be a JSON object")
+                                
+                                h_name, h_type, h_props = _entity_from_value(obj.get("h"))
+                                t_name, t_type, t_props = _entity_from_value(obj.get("t"))
+                                r_type, r_props = _relation_from_value(obj.get("r"))
+                                
+                                # h_desc = _desc_from_props(h_name, h_props)
+                                # t_desc = _desc_from_props(t_name, t_props)
+                                
+                                # Collect entities (will be deduplicated by name)
+                                entities_to_upsert[h_name] = {
+                                    **h_props,
+                                    # "description": h_desc,
+                                    "entity_type": h_type or "UNKNOWN",
+                                    "file_path": file_path.name,
+                                    "source_id": "jsonl_import",
+                                    "graph_tag": graph_tag or "default",
+                                }
+                                entities_to_upsert[t_name] = {
+                                    **t_props,
+                                    # "description": t_desc,
+                                    "entity_type": t_type or "UNKNOWN",
+                                    "file_path": file_path.name,
+                                    "source_id": "jsonl_import",
+                                    "graph_tag": graph_tag or "default",
+                                }
+                                
+                                # Collect relations
+                                rel_keywords = r_type
+                                rel_desc_parts = [f"type: {r_type}"]
+                                for k, v in r_props.items():
+                                    if v is None:
+                                        continue
+                                    rel_desc_parts.append(f"{k}: {v}")
+                                rel_desc = "；".join(rel_desc_parts)
+                                
+                                relations_to_upsert.append((
+                                    h_name,
+                                    t_name,
+                                    {
+                                        "relationship_type": r_type,
+                                        "file_path": file_path.name,
+                                        "source_id": "jsonl_import",
+                                        "graph_tag": graph_tag or "default",
+                                        **r_props,
+                                    },
+                                ))
+                                
+                                lines_ok += 1
+                            except Exception as e:
+                                errors.append({
+                                    "line": line_no,
+                                    "error": str(e),
+                                    "raw": line[:5000],
+                                })
+                        
+                        # Phase 2: Batch upsert entities concurrently - wait for all to complete
+                        if entities_to_upsert:
+                            BATCH_SIZE = 50  # Process entities in batches
+                            entity_items = list(entities_to_upsert.items())
+                            
+                            # Collect all entity tasks from all batches
+                            all_entity_tasks = []
+                            for i in range(0, len(entity_items), BATCH_SIZE):
+                                batch = entity_items[i:i + BATCH_SIZE]
+                                batch_tasks = [
+                                    aupsert_entity(
+                                        rag.chunk_entity_relation_graph,
+                                        rag.entities_vdb,
+                                        rag.relationships_vdb,
+                                        entity_name,
+                                        entity_data,
+                                    )
+                                    for entity_name, entity_data in batch
+                                ]
+                                all_entity_tasks.extend(batch_tasks)
+                            
+                            # Wait for all entity upserts to complete before proceeding
+                            if all_entity_tasks:
+                                all_entity_results = await asyncio.gather(*all_entity_tasks, return_exceptions=True)
+                                
+                                # Count successful upserts
+                                for result in all_entity_results:
+                                    if not isinstance(result, Exception):
+                                        entities_created_or_updated += 1
+                        
+                        # Phase 3: Batch upsert relations concurrently - only after all entities are done
+                        if relations_to_upsert:
+                            BATCH_SIZE = 50  # Process relations in batches
+                            
+                            for i in range(0, len(relations_to_upsert), BATCH_SIZE):
+                                batch = relations_to_upsert[i:i + BATCH_SIZE]
+                                tasks = [
+                                    aupsert_relation(
+                                        rag.chunk_entity_relation_graph,
+                                        rag.entities_vdb,
+                                        rag.relationships_vdb,
+                                        h_name,
+                                        t_name,
+                                        rel_data,
+                                    )
+                                    for h_name, t_name, rel_data in batch
+                                ]
+                                results = await asyncio.gather(*tasks, return_exceptions=True)
+                                
+                                # Count successful upserts
+                                for result in results:
+                                    if not isinstance(result, Exception):
+                                        relations_created_or_updated += 1
+                        
+                        # Log results
+                        if errors:
+                            logger.warning(
+                                f"JSONL import completed with {len(errors)} errors: "
+                                f"{lines_ok} lines processed, "
+                                f"{entities_created_or_updated} entities, "
+                                f"{relations_created_or_updated} relations"
+                            )
+                        else:
+                            logger.info(
+                                f"JSONL import successful: "
+                                f"{lines_ok} lines processed, "
+                                f"{entities_created_or_updated} entities, "
+                                f"{relations_created_or_updated} relations"
+                            )
+                        
+                        # Move file to __enqueued__ directory after processing
+                        try:
+                            enqueued_dir = file_path.parent / "__enqueued__"
+                            enqueued_dir.mkdir(exist_ok=True)
+                            unique_filename = get_unique_filename_in_enqueued(
+                                enqueued_dir, file_path.name
+                            )
+                            target_path = enqueued_dir / unique_filename
+                            file_path.rename(target_path)
+                            logger.debug(
+                                f"Moved JSONL file to enqueued directory: {file_path.name} -> {unique_filename}"
+                            )
+                        except Exception as move_error:
+                            logger.error(
+                                f"Failed to move JSONL file {file_path.name} to __enqueued__ directory: {move_error}"
+                            )
+                        
+                        # Return success (JSONL files don't go through document pipeline)
+                        return True, track_id
+                        
+                    except Exception as e:
+                        error_files = [
+                            {
+                                "file_path": str(file_path.name),
+                                "error_description": "[JSONL Import]Error processing JSONL file",
+                                "original_error": str(e),
+                                "file_size": file_size,
+                            }
+                        ]
+                        await rag.apipeline_enqueue_error_documents(error_files, track_id)
+                        logger.error(f"[JSONL Import]Error processing JSONL file {file_path.name}: {str(e)}")
+                        logger.error(traceback.format_exc())
+                        return False, track_id
+                
                 case (
                     ".txt"
                     | ".md"
@@ -1516,7 +1770,9 @@ async def pipeline_index_file(
         success, returned_track_id = await pipeline_enqueue_file(
             rag, file_path, track_id, graph_tag
         )
-        if success:
+        # JSONL files are processed directly as knowledge graph imports,
+        # they don't need to go through the document processing pipeline
+        if success and file_path.suffix.lower() != ".jsonl":
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:

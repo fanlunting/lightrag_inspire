@@ -99,7 +99,12 @@
         "error": "部分文件上传失败"
       },
       "generalError": "上传失败\n{{error}}",
-      "fileTypes": "支持的文件类型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支持的文件类型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, JSONL, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "jsonl": {
+        "partialSuccess": "部分成功：已处理 {{lines}} 行，创建/更新 {{entities}} 个实体和 {{relations}} 个关系，{{errors}} 个错误",
+        "importFailed": "知识图谱导入失败",
+        "timeout": "文件 {{fileName}} 导入超时（处理时间过长），请尝试减小文件大小或联系管理员"
+      },
       "fileUploader": {
         "singleFileLimit": "一次只能上传一个文件",
         "maxFilesLimit": "最多只能上传 {{count}} 个文件",

@@ -164,6 +164,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             }
             for dp in results
         ]
+        logger.info(f" nano_vector_db_impl::query() : query: {query};top_k: {top_k}; results: {results}")
         return results
 
     @property

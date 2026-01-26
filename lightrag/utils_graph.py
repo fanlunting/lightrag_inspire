@@ -1320,25 +1320,25 @@ async def aupsert_entity(
     async with get_storage_keyed_lock(
         [f"{entity_name}@{graph_tag}"], namespace=namespace, enable_logging=False
     ):
-        existing = await chunk_entity_relation_graph.get_node(
-            entity_name, graph_tag=graph_tag
-        )
         now = int(time.time())
 
-        reserved = {"entity_name"}
+        reserved = {"entity_name", "entity_type"}  # entity_type is handled separately in base
         extra_props = {k: v for k, v in dict(entity_data).items() if k not in reserved}
+        
+        entity_type = entity_data.get("entity_type", "UNKNOWN")
+        
         base = {
             "entity_id": entity_name,
-            "entity_type": entity_data.get("entity_type", "UNKNOWN"),
+            "entity_type": entity_type,
             "description": entity_data.get("description", ""),
             "source_id": entity_data.get("source_id", "jsonl_import"),
             "file_path": entity_data.get("file_path", "jsonl_import"),
             "graph_tag": graph_tag,
         }
-        merged = {**(existing or {}), **base, **extra_props}
+        merged = { **base, **extra_props}
         merged.setdefault("created_at", now)
         merged["updated_at"] = now
-
+        logger.info(f" aupsert_entity():  {merged}")
         await chunk_entity_relation_graph.upsert_node(entity_name, merged)
 
         description = str(merged.get("description") or "")
@@ -1414,6 +1414,7 @@ async def aupsert_relation(
         # Ensure both endpoints exist in this graph_tag.
         for ent in (source_entity, target_entity):
             exists = await chunk_entity_relation_graph.has_node(ent, graph_tag=graph_tag)
+            logger.info(f" aupsert_relation(): ent: {ent}")
             if not exists:
                 await chunk_entity_relation_graph.upsert_node(
                     ent,

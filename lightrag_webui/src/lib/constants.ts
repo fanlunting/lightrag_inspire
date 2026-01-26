@@ -74,7 +74,8 @@ export const supportedFileTypes = {
     '.php', // # PHP source code
     '.css', // # Cascading Style Sheets
     '.scss',  //# Sassy CSS
-    '.less'
+    '.less',
+    '.jsonl' // # JSON Lines (Knowledge Graph format)
   ],
   'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],

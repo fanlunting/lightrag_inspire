@@ -175,7 +175,7 @@ class Neo4JStorage(BaseGraphStorage):
                 try:
                     async with self._driver.session(database=database) as session:
                         try:
-                            result = await session.run("MATCH (n) RETURN n LIMIT 0")
+                            result = await session.run("MATCH (n:`base`) RETURN n LIMIT 0")
                             await result.consume()  # Ensure result is consumed
                             logger.info(
                                 f"neo4j_database:[{self.workspace}] Connected to {database} at {URI}"
@@ -234,8 +234,9 @@ class Neo4JStorage(BaseGraphStorage):
                     # Create B-Tree index for entity_id for faster lookups
                     try:
                         async with self._driver.session(database=database) as session:
+                            index_name = f"entity_id_idx_{workspace_label}"
                             await session.run(
-                                f"CREATE INDEX IF NOT EXISTS FOR (n  ) ON (n.entity_id)"
+                                f"CREATE INDEX {index_name} IF NOT EXISTS FOR (n:`{workspace_label}`) ON (n.entity_id)"
                             )
                             logger.info(
                                 f"[{self.workspace}] Ensured B-Tree index on entity_id for {workspace_label} in {database}"
@@ -321,7 +322,7 @@ class Neo4JStorage(BaseGraphStorage):
                     try:
                         create_index_query = f"""
                         CREATE FULLTEXT INDEX {index_name}
-                        FOR (n  ) ON EACH [n.entity_id]
+                        FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
                         OPTIONS {{
                             indexConfig: {{
                                 `fulltext.analyzer`: 'cjk',
@@ -342,7 +343,7 @@ class Neo4JStorage(BaseGraphStorage):
                         )
                         create_index_query = f"""
                         CREATE FULLTEXT INDEX {index_name}
-                        FOR (n  ) ON EACH [n.entity_id]
+                        FOR (n:`{workspace_label}`) ON EACH [n.entity_id]
                         """
                         result = await session.run(create_index_query)
                         await result.consume()
@@ -400,10 +401,11 @@ class Neo4JStorage(BaseGraphStorage):
             result = None
             try:
                 # Always filter by graph_tag for graph isolation
-                query = f"MATCH (n   {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN count(n) > 0 AS node_exists"
+                query = f"MATCH (n {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN count(n) AS node_exists"
                 result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
                 single_result = await result.single()
                 await result.consume()  # Ensure result is fully consumed
+                logger.info(f" has_node(): query: {query}; node_id: {node_id}; graph_tag: {graph_tag}. result: {single_result['node_exists']}")
                 return single_result["node_exists"]
             except Exception as e:
                 logger.error(
@@ -481,7 +483,7 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 # Always filter by graph_tag for graph isolation
                 query = (
-                    f"MATCH (n   {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN n"
+                    f"MATCH (n:`base` {{entity_id: $entity_id, graph_tag: $graph_tag}}) RETURN n"
                 )
                 result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
                 try:
@@ -532,12 +534,13 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             UNWIND $node_ids AS id
-            MATCH (n   {{entity_id: id, graph_tag: $graph_tag}})
+            MATCH (n {{entity_id: id}})
             RETURN n.entity_id AS entity_id, n
             """
             result = await session.run(query, node_ids=node_ids, graph_tag=graph_tag)
             nodes = {}
             async for record in result:
+                logger.info(f" neo4j_impl::get_nodes_batch(): record: {record}")
                 entity_id = record["entity_id"]
                 node = record["n"]
                 node_dict = dict(node)
@@ -550,6 +553,7 @@ class Neo4JStorage(BaseGraphStorage):
                     ]
                 nodes[entity_id] = node_dict
             await result.consume()  # Make sure to consume the result fully
+            logger.info(f" neo4j_impl::get_nodes_batch(): query: {query}; node_ids: {node_ids}; return nodes: {nodes}")
             return nodes
 
     async def node_degree(self, node_id: str, graph_tag: str = "default") -> int:
@@ -572,12 +576,12 @@ class Neo4JStorage(BaseGraphStorage):
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             try:
-                query = f"""
-                    MATCH (n   {{entity_id: $entity_id, graph_tag: $graph_tag}})
+                query = """
+                    MATCH (n {entity_id: $entity_id})
                     OPTIONAL MATCH (n)-[r]-()
                     RETURN COUNT(r) AS degree
-                """
-                result = await session.run(query, entity_id=node_id, graph_tag=graph_tag)
+                    """
+                result = await session.run(query, entity_id=node_id)
                 try:
                     record = await result.single()
 
@@ -619,7 +623,7 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
                 UNWIND $node_ids AS id
-                MATCH (n   {{entity_id: id, graph_tag: $graph_tag}})
+                MATCH (n:`base`   {{entity_id: id, graph_tag: $graph_tag}})
                 RETURN n.entity_id AS entity_id, count {{ (n)--() }} AS degree;
             """
             result = await session.run(query, node_ids=node_ids, graph_tag=graph_tag)
@@ -850,8 +854,8 @@ class Neo4JStorage(BaseGraphStorage):
                 results = None
                 try:
                     workspace_label = self._get_workspace_label()
-                    query = f"""MATCH (n   {{entity_id: $entity_id, graph_tag: $graph_tag}})
-                            OPTIONAL MATCH (n)-[r]-(connected  )
+                    query = f"""MATCH (n:`base`   {{entity_id: $entity_id, graph_tag: $graph_tag}})
+                            OPTIONAL MATCH (n:`base`)-[r]-(connected  )
                             WHERE connected.entity_id IS NOT NULL AND connected.graph_tag = $graph_tag
                             RETURN n, r, connected"""
                     results = await session.run(
@@ -922,8 +926,8 @@ class Neo4JStorage(BaseGraphStorage):
             workspace_label = self._get_workspace_label()
             query = f"""
                 UNWIND $node_ids AS id
-                MATCH (n   {{entity_id: id, graph_tag: $graph_tag}})
-                OPTIONAL MATCH (n)-[r]-(connected  )
+                MATCH (n:`base`   {{entity_id: id, graph_tag: $graph_tag}})
+                OPTIONAL MATCH (n:`base`)-[r]-(connected  )
                 WHERE connected.graph_tag = $graph_tag OR connected IS NULL
                 RETURN id AS queried_id, n.entity_id AS node_entity_id,
                        connected.entity_id AS connected_entity_id,
@@ -983,8 +987,8 @@ class Neo4JStorage(BaseGraphStorage):
         """
         workspace_label = self._get_workspace_label()
         properties = dict(node_data or {})
-        entity_type = properties["entity_type"]
-        logger.info(f"node_data: {node_data}, node_id: {node_id}")
+        entity_type = properties.get("entity_type", "UNKNOWN")
+        logger.info(f"upsert_node():node_data_: {node_data}; node_id: {node_id}")
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
         graph_tag = properties.get("graph_tag", "default")
@@ -1137,10 +1141,10 @@ class Neo4JStorage(BaseGraphStorage):
         """
         # Get max_nodes from global_config if not provided
         if max_nodes is None:
-            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+            max_nodes = self.global_config.get("max_graph_nodes", 100)
         else:
             # Limit max_nodes to not exceed global_config max_graph_nodes
-            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 100))
 
         # Normalize graph_tags (treat None / [] as "no filtering")
         graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
@@ -1161,30 +1165,20 @@ class Neo4JStorage(BaseGraphStorage):
                     # We treat a node as matching if ANY selected tag is present in the split list.
                     if has_graph_tag_filter:
                         count_query = f"""
-                        MATCH (n  )
-                        WITH n,
-                             CASE
-                                 WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
-                                     THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
-                                 ELSE CASE
-                                     WHEN toString(n.graph_tag) = '' THEN ['default']
-                                     ELSE split(toString(n.graph_tag), $sep)
-                                 END
-                             END AS ntags
-                        WHERE any(t IN $graph_tags WHERE t IN ntags)
+                        UNWIND $graph_tags AS graph_tag
+                        MATCH (n {{graph_tag: graph_tag}})
                         RETURN count(n) AS total
                         """
                     else:
                         count_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         RETURN count(n) AS total
                         """
                     count_result = None
                     try:
                         if has_graph_tag_filter:
                             count_result = await session.run(
-                                count_query, graph_tags=graph_tags, sep=GRAPH_FIELD_SEP
+                                count_query, graph_tags=graph_tags
                             )
                         else:
                             count_result = await session.run(count_query)
@@ -1202,11 +1196,11 @@ class Neo4JStorage(BaseGraphStorage):
                     # Run main query to get nodes with highest degree
                     if has_graph_tag_filter:
                         main_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
+                                 WHEN size(n.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -1214,12 +1208,12 @@ class Neo4JStorage(BaseGraphStorage):
                                  END
                              END AS ntags
                         WHERE any(t IN $graph_tags WHERE t IN ntags)
-                        OPTIONAL MATCH (n)-[r]-(connected  )
+                        OPTIONAL MATCH (n:`base`)-[r]-(connected  )
                         WITH n, r, connected,
                              CASE
                                  WHEN connected IS NULL THEN ['__null__']
                                  WHEN connected.graph_tag IS NULL THEN ['default']
-                                 WHEN size(connected.graph_tag) IS NOT NULL AND toString(connected.graph_tag) <> connected.graph_tag
+                                 WHEN size(connected.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(connected.graph_tag) = 0 THEN ['default'] ELSE connected.graph_tag END
                                  ELSE CASE
                                      WHEN toString(connected.graph_tag) = '' THEN ['default']
@@ -1240,8 +1234,8 @@ class Neo4JStorage(BaseGraphStorage):
                         """
                     else:
                         main_query = f"""
-                        MATCH (n  )
-                        OPTIONAL MATCH (n)-[r]-()
+                        MATCH (n:`base`  )
+                        OPTIONAL MATCH (n:`base`)-[r]-()
                         WITH n, COALESCE(count(r), 0) AS degree
                         ORDER BY degree DESC
                         LIMIT $max_nodes
@@ -1280,7 +1274,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH start,
                              CASE
                                  WHEN start.graph_tag IS NULL THEN ['default']
-                                 WHEN size(start.graph_tag) IS NOT NULL AND toString(start.graph_tag) <> start.graph_tag
+                                 WHEN size(start.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(start.graph_tag) = 0 THEN ['default'] ELSE start.graph_tag END
                                  ELSE CASE
                                      WHEN toString(start.graph_tag) = '' THEN ['default']
@@ -1306,7 +1300,7 @@ class Neo4JStorage(BaseGraphStorage):
                         WITH node, relationships, total_nodes,
                              CASE
                                  WHEN node.graph_tag IS NULL THEN ['default']
-                                 WHEN size(node.graph_tag) IS NOT NULL AND toString(node.graph_tag) <> node.graph_tag
+                                 WHEN size(node.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
                                  ELSE CASE
                                      WHEN toString(node.graph_tag) = '' THEN ['default']
@@ -1571,9 +1565,9 @@ class Neo4JStorage(BaseGraphStorage):
             # If multiple nodes share the same entity_id, pick a deterministic start node by degree.
             if has_graph_tag_filter:
                 query = f"""
-                MATCH (n   {{entity_id: $entity_id}})
+                MATCH (n:`base`   {{entity_id: $entity_id}})
                 {graph_tag_filter}
-                OPTIONAL MATCH (n)-[r]-()
+                OPTIONAL MATCH (n:`base`)-[r]-()
                 WITH n, count(r) AS degree
                 ORDER BY degree DESC
                 LIMIT 1
@@ -1587,8 +1581,8 @@ class Neo4JStorage(BaseGraphStorage):
                 )
             else:
                 query = f"""
-                MATCH (n   {{entity_id: $entity_id}})
-                OPTIONAL MATCH (n)-[r]-()
+                MATCH (n:`base`   {{entity_id: $entity_id}})
+                OPTIONAL MATCH (n:`base`)-[r]-()
                 WITH n, count(r) AS degree
                 ORDER BY degree DESC
                 LIMIT 1
@@ -1772,12 +1766,12 @@ class Neo4JStorage(BaseGraphStorage):
             # Method 2: Query compatible with older versions
             if has_graph_tag_filter:
                 query = f"""
-                MATCH (n  )
+                MATCH (n:`base`  )
                 WHERE n.entity_id IS NOT NULL
                 WITH n,
                      CASE
                          WHEN n.graph_tag IS NULL THEN ['default']
-                         WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
+                         WHEN size(n.graph_tag) IS NOT NULL
                              THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                          ELSE CASE
                              WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -1793,7 +1787,7 @@ class Neo4JStorage(BaseGraphStorage):
                 )
             else:
                 query = f"""
-                MATCH (n  )
+                MATCH (n:`base`  )
                 WHERE n.entity_id IS NOT NULL
                 RETURN DISTINCT n.entity_id AS label
                 ORDER BY label
@@ -1835,7 +1829,7 @@ class Neo4JStorage(BaseGraphStorage):
         async def _do_delete(tx: AsyncManagedTransaction):
             workspace_label = self._get_workspace_label()
             query = f"""
-            MATCH (n   {{entity_id: $entity_id, graph_tag: $graph_tag}})
+            MATCH (n:`base`   {{entity_id: $entity_id, graph_tag: $graph_tag}})
             DETACH DELETE n
             """
             result = await tx.run(query, entity_id=node_id, graph_tag=graph_tag)
@@ -1936,10 +1930,37 @@ class Neo4JStorage(BaseGraphStorage):
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             query = f"""
-            MATCH (n  )
+            MATCH (n)
             RETURN n
             """
             result = await session.run(query)
+            nodes = []
+            async for record in result:
+                node = record["n"]
+                node_dict = dict(node)
+                # Add node id (entity_id) to the dictionary for easier access
+                node_dict["id"] = node_dict.get("entity_id")
+                nodes.append(node_dict)
+            await result.consume()
+            return nodes
+
+    async def get_all_nodes_by_graph_tags(self, graph_tags: list[str] | None = None) -> list[dict]:
+        """Get all nodes in the graph.
+        Args:
+            graph_tags: List of graph tags to filter nodes by. If None, all nodes will be returned.
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties
+        """
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            query = f"""
+            UNWIND $graph_tags AS graph_tag
+            MATCH (n {{graph_tag: graph_tag}})
+            RETURN n
+            """
+            result = await session.run(query, graph_tags=graph_tags)
             nodes = []
             async for record in result:
                 node = record["n"]
@@ -1961,7 +1982,7 @@ class Neo4JStorage(BaseGraphStorage):
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             query = f"""
-            MATCH (a  )-[r]-(b  )
+            MATCH (a )-[r]-(b )
             RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
             """
             result = await session.run(query)
@@ -1970,6 +1991,33 @@ class Neo4JStorage(BaseGraphStorage):
                 edge_properties = record["properties"]
                 edge_properties["source"] = record["source"]
                 edge_properties["target"] = record["target"]
+                edges.append(edge_properties)
+            await result.consume()
+            return edges
+    
+    async def get_all_edges_by_graph_tags(self, graph_tags: list[str] | None = None) -> list[dict]:
+        """Get all edges in the graph.
+        Args:
+            graph_tags: List of graph tags to filter edges by. If None, all edges will be returned.
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties
+        """
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            query = f"""
+            UNWIND $graph_tags AS graph_tag
+            MATCH (a {{graph_tag: graph_tag}})-[r]-(b {{graph_tag: graph_tag}})
+            RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties, graph_tag AS graph_tag
+            """
+            result = await session.run(query, graph_tags=graph_tags)
+            edges = []
+            async for record in result:
+                edge_properties = record["properties"]
+                edge_properties["source"] = record["source"]
+                edge_properties["target"] = record["target"]
+                edge_properties["graph_tag"] = record["graph_tag"]
                 edges.append(edge_properties)
             await result.consume()
             return edges
@@ -1995,12 +2043,12 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 if has_graph_tag_filter:
                     query = f"""
-                    MATCH (n  )
+                    MATCH (n:`base`  )
                     WHERE n.entity_id IS NOT NULL
                     WITH n,
                          CASE
                              WHEN n.graph_tag IS NULL THEN ['default']
-                             WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
+                             WHEN size(n.graph_tag) IS NOT NULL
                                  THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                              ELSE CASE
                                  WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2008,12 +2056,12 @@ class Neo4JStorage(BaseGraphStorage):
                              END
                          END AS ntags
                     WHERE any(t IN $graph_tags WHERE t IN ntags)
-                    OPTIONAL MATCH (n)-[r]-(m  )
+                    OPTIONAL MATCH (n:`base`)-[r]-(m  )
                     WHERE m.entity_id IS NOT NULL
                     WITH n, r, m,
                          CASE
                              WHEN m.graph_tag IS NULL THEN ['default']
-                             WHEN size(m.graph_tag) IS NOT NULL AND toString(m.graph_tag) <> m.graph_tag
+                             WHEN size(m.graph_tag) IS NOT NULL
                                  THEN CASE WHEN size(m.graph_tag) = 0 THEN ['default'] ELSE m.graph_tag END
                              ELSE CASE
                                  WHEN toString(m.graph_tag) = '' THEN ['default']
@@ -2034,9 +2082,9 @@ class Neo4JStorage(BaseGraphStorage):
                     )
                 else:
                     query = f"""
-                    MATCH (n  )
+                    MATCH (n:`base`  )
                     WHERE n.entity_id IS NOT NULL
-                    OPTIONAL MATCH (n)-[r]-()
+                    OPTIONAL MATCH (n:`base`)-[r]-()
                     WITH n.entity_id AS label, count(r) AS degree
                     ORDER BY degree DESC, label ASC
                     LIMIT $limit
@@ -2084,7 +2132,7 @@ class Neo4JStorage(BaseGraphStorage):
             WITH node, score,
                  CASE
                      WHEN node.graph_tag IS NULL THEN ['default']
-                     WHEN size(node.graph_tag) IS NOT NULL AND toString(node.graph_tag) <> node.graph_tag
+                     WHEN size(node.graph_tag) IS NOT NULL
                          THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
                      ELSE CASE
                          WHEN toString(node.graph_tag) = '' THEN ['default']
@@ -2174,12 +2222,12 @@ class Neo4JStorage(BaseGraphStorage):
                     # For Chinese text, use direct CONTAINS without case conversion
                     if has_graph_tag_filter:
                         cypher_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
+                                 WHEN size(n.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2208,7 +2256,7 @@ class Neo4JStorage(BaseGraphStorage):
                         )
                     else:
                         cypher_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         WHERE n.entity_id IS NOT NULL
                         WITH n.entity_id AS label
                         WHERE label CONTAINS $query_strip
@@ -2229,12 +2277,12 @@ class Neo4JStorage(BaseGraphStorage):
                     # For non-Chinese text, use the original fallback logic
                     if has_graph_tag_filter:
                         cypher_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         WHERE n.entity_id IS NOT NULL
                         WITH n,
                              CASE
                                  WHEN n.graph_tag IS NULL THEN ['default']
-                                 WHEN size(n.graph_tag) IS NOT NULL AND toString(n.graph_tag) <> n.graph_tag
+                                 WHEN size(n.graph_tag) IS NOT NULL
                                      THEN CASE WHEN size(n.graph_tag) = 0 THEN ['default'] ELSE n.graph_tag END
                                  ELSE CASE
                                      WHEN toString(n.graph_tag) = '' THEN ['default']
@@ -2263,7 +2311,7 @@ class Neo4JStorage(BaseGraphStorage):
                         )
                     else:
                         cypher_query = f"""
-                        MATCH (n  )
+                        MATCH (n:`base`  )
                         WHERE n.entity_id IS NOT NULL
                         WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
                         WHERE label_lower CONTAINS $query_lower
@@ -2303,7 +2351,7 @@ class Neo4JStorage(BaseGraphStorage):
             try:
                 async with self._driver.session(database=self._DATABASE) as session:
                     # Delete all nodes and relationships in current workspace only
-                    query = f"MATCH (n  ) DETACH DELETE n"
+                    query = f"MATCH (n:`base`  ) DETACH DELETE n"
                     result = await session.run(query)
                     await result.consume()  # Ensure result is fully consumed
 

@@ -4366,6 +4366,7 @@ async def _build_context_str(
         )
         empty_raw_data["status"] = "failure"
         empty_raw_data["message"] = "Query returned empty dataset."
+        logger.info(f" operate::_build_context_str(): Empty raw data: {empty_raw_data}; return 空白")
         return "", empty_raw_data
 
     # output chunks tracking infomations
@@ -4406,9 +4407,10 @@ async def _build_context_str(
         entity_id_to_original,
         relation_id_to_original,
     )
-    logger.debug(
+    logger.info(
         f"[_build_context_str] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
     )
+    logger.info(f" operate::_build_context_str(): result: {result}; final_data: {final_data}")
     return result, final_data
 
 
@@ -4548,9 +4550,12 @@ async def _get_node_data(
 
     if not len(results):
         return [], []
+    else: 
+        logger.info(f"enitities_vdb results length: {len(results)}, {results[0]}")
 
     # Extract all entity IDs from your results list
-    node_ids = [r["entity_name"] for r in results]
+    # Use entity_name (returned by all vector DB implementations)
+    node_ids = [r.get("entity_name") or r.get("entity_id") for r in results]
 
     # Call the batch node retrieval and degree functions concurrently.
     nodes_dict, degrees_dict = await asyncio.gather(
@@ -4568,7 +4573,7 @@ async def _get_node_data(
     node_datas = [
         {
             **n,
-            "entity_name": k["entity_name"],
+            "entity_name": k.get("entity_name") or k.get("entity_id"),
             "rank": d,
             "created_at": k.get("created_at"),
         }

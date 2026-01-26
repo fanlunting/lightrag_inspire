@@ -273,7 +273,8 @@ async def main():
         # await rag.ainsert(content, file_paths=decease_file, graph_tag="standard_decease")
 
         # merge, graph_tag_list
-        await rag.amerge_graph(graph_tags=["test1", "test2"])
+        #  await rag.amerge_graph(graph_tags=["test1", "test2"])
+        
         
 
         # Perform naive search

@@ -99,7 +99,12 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، JSONL، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "jsonl": {
+        "partialSuccess": "نجاح جزئي: تمت معالجة {{lines}} سطر، تم إنشاء/تحديث {{entities}} كيان و {{relations}} علاقة، {{errors}} أخطاء",
+        "importFailed": "فشل استيراد الرسم البياني للمعرفة",
+        "timeout": "انتهت مهلة استيراد الملف {{fileName}} (استغرق المعالجة وقتًا طويلاً)، يرجى تقليل حجم الملف أو الاتصال بالمسؤول"
+      },
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",

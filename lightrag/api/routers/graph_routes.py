@@ -247,6 +247,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
 
             query = (q or "").strip().lower()
             result = sorted(tags)
+            logger.info(f" graph_routes::list_graph_tags(): result: {result}")
             if query:
                 result = [t for t in result if query in t.lower()]
             return result[:limit]
@@ -268,11 +269,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Each new edge is annotated with `fusion_tag`.
         """
         try:
-            result = await rag.amerge_graph(
-                graph_tags=request.graph_tags,
-                similarity_threshold=request.similarity_threshold,
-                top_k=request.top_k,
-                llm_confirm=request.llm_confirm,
+            result = await rag.amerge_graph_whole(
+                graph_tags=request.graph_tags
             )
             return {
                 "status": "success",
@@ -325,8 +323,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 raw_type = v.get("entity_type") or v.get("enity_type")
                 entity_type: str | None
                 if isinstance(raw_type, str):
+                    logger.info(f"{raw_name} entity_type: {raw_type}")
                     entity_type = raw_type.strip() or None
                 else:
+                    logger.info(f"{raw_name} entity_type missing: {raw_type}")
                     entity_type = None
 
                 props = {
@@ -358,17 +358,33 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         errors: list[dict[str, Any]] = []
 
         # Stream-read to avoid loading big files into memory.
+        # UploadFile doesn't have readline(), so we read in chunks and process line by line
         line_no = 0
-        while True:
-            raw = await file.readline()
-            if not raw:
-                break
-            line_no += 1
-
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-
+        buffer = ""
+        chunk_size = 8192  # 8KB chunks
+        
+        # Build descriptions for embeddings from properties (best-effort).
+        # Prefer human-readable fields and avoid mixing structural fields like entity_type into description.
+        def _desc_from_props(name: str, props: dict[str, Any]) -> str:
+            for key in ("description", "介绍", "简介", "intro", "summary"):
+                v = props.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            if not props:
+                return ""
+            # Avoid mixing structural/meta fields into description.
+            skip_keys = {"graph_tag", "file_path", "source_id"}
+            parts = []
+            for k, v in props.items():
+                if k in skip_keys or v is None:
+                    continue
+                parts.append(f"{k}: {v}")
+            return "；".join(parts)
+        
+        async def _process_line(line: str, line_no: int):
+            """Process a single line from JSONL file."""
+            nonlocal entities_created_or_updated, relations_created_or_updated, lines_ok
+            
             try:
                 obj = json.loads(line)
                 if not isinstance(obj, dict):
@@ -377,24 +393,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 h_name, h_type, h_props = _entity_from_value(obj.get("h"))
                 t_name, t_type, t_props = _entity_from_value(obj.get("t"))
                 r_type, r_props = _relation_from_value(obj.get("r"))
-
-                # Build descriptions for embeddings from properties (best-effort).
-                # Prefer human-readable fields and avoid mixing structural fields like entity_type into description.
-                def _desc_from_props(name: str, props: dict[str, Any]) -> str:
-                    for key in ("description", "介绍", "简介", "intro", "summary"):
-                        v = props.get(key)
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-                    if not props:
-                        return ""
-                    # Avoid mixing structural/meta fields into description.
-                    skip_keys = {"graph_tag", "file_path", "source_id"}
-                    parts = []
-                    for k, v in props.items():
-                        if k in skip_keys or v is None:
-                            continue
-                        parts.append(f"{k}: {v}")
-                    return "；".join(parts)
 
                 h_desc = _desc_from_props(h_name, h_props)
                 t_desc = _desc_from_props(t_name, t_props)
@@ -465,6 +463,26 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                         "raw": line[:5000],
                     }
                 )
+        
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                # Process remaining buffer (last line without newline)
+                if buffer.strip():
+                    line_no += 1
+                    await _process_line(buffer.strip(), line_no)
+                break
+            
+            # Decode chunk and add to buffer
+            buffer += chunk.decode("utf-8", errors="replace")
+            
+            # Process complete lines from buffer (lines ending with \n)
+            while "\n" in buffer:
+                line_no += 1
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if line:  # Skip empty lines
+                    await _process_line(line, line_no)
 
         return {
             "status": "success" if not errors else "partial_success",
@@ -480,7 +498,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     async def get_knowledge_graph(
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
-        max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+        max_nodes: int = Query(100, description="Maximum nodes to return", ge=1),
         graph_tags: Optional[List[str]] = Query(
             None,
             description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
