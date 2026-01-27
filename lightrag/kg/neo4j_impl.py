@@ -13,6 +13,7 @@ from tenacity import (
 )
 
 import logging
+from ..constants import GRAPH_FIELD_SEP
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -1242,163 +1243,441 @@ class Neo4JStorage(BaseGraphStorage):
         return result
 
     async def _robust_fallback(
-        self, node_label: str, max_depth: int, max_nodes: int
+        self,
+        node_label: str,
+        max_depth: int,
+        max_nodes: int,
+        graph_tags: list[str] | None = None,
     ) -> KnowledgeGraph:
         """
         Fallback implementation when APOC plugin is not available or incompatible.
         This method implements the same functionality as get_knowledge_graph but uses
         only basic Cypher queries and true breadth-first traversal instead of APOC procedures.
+
+        Optimized version that batches queries by level to reduce database round trips.
+
+        Args:
+            node_label: Label of the starting node
+            max_depth: Maximum depth of the subgraph
+            max_nodes: Maximum nodes to return
+            graph_tags: Optional list of graph tags to filter nodes/edges.
+                - None / [] means no filtering
+                - Otherwise, only nodes with matching graph_tag are considered.
         """
-        from collections import deque
+        logger.info(
+            f"[{self.workspace}] Starting _robust_fallback for entity_id: {node_label}, max_depth: {max_depth}, max_nodes: {max_nodes}"
+        )
 
-        result = KnowledgeGraph()
-        visited_nodes = set()
-        visited_edges = set()
-        visited_edge_pairs = set()
+        try:
+            # Normalize graph_tags (treat None / [] as "no filtering")
+            graph_tags = [
+                t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()
+            ]
+            has_graph_tag_filter = len(graph_tags) > 0
 
-        # Get the starting node's data
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            query = f"""
-            MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
-            RETURN id(n) as node_id, n
-            """
-            node_result = await session.run(query, entity_id=node_label)
-            try:
-                node_record = await node_result.single()
-                if not node_record:
-                    return result
+            result = KnowledgeGraph()
+            visited_nodes = set()
+            visited_edges = set()
+            visited_edge_pairs = set()
 
-                # Create initial KnowledgeGraphNode
-                start_node = KnowledgeGraphNode(
-                    id=f"{node_record['n'].get('entity_id')}",
-                    labels=[node_record["n"].get("entity_id")],
-                    properties=dict(node_record["n"]._properties),
-                )
-            finally:
-                await node_result.consume()  # Ensure results are consumed
+            # Build graph_tag filter condition.
+            # IMPORTANT: This fallback path is used when APOC is unavailable, so do NOT rely on any apoc.* procedures.
+            # graph_tag can be stored as either a string or an array in Neo4j.
+            # We need to normalize it to an array for comparison.
+            # Strategy: Check if it's an array by comparing size with string length
+            # If size(n.graph_tag) == size(toString(n.graph_tag)), it's likely a string
+            # Otherwise, treat as array
+            if has_graph_tag_filter:
+                graph_tag_filter_with = """
+                WITH n, size(n.graph_tag) AS tag_size, size(toString(n.graph_tag)) AS tag_str_len,
+                     CASE
+                         WHEN n.graph_tag IS NULL THEN ['default']
+                         WHEN toString(n.graph_tag) = '' THEN ['default']
+                         WHEN toString(n.graph_tag) CONTAINS $sep THEN split(toString(n.graph_tag), $sep)
+                         WHEN tag_size = tag_str_len THEN [toString(n.graph_tag)]
+                         ELSE n.graph_tag
+                     END AS ntags
+                WHERE any(t IN $graph_tags WHERE t IN ntags)
+                """
+                graph_tag_filter_rel = """
+                WITH r, b, edge_id, target_id, source_id, size(b.graph_tag) AS tag_size, size(toString(b.graph_tag)) AS tag_str_len,
+                     CASE
+                         WHEN b.graph_tag IS NULL THEN ['default']
+                         WHEN toString(b.graph_tag) = '' THEN ['default']
+                         WHEN toString(b.graph_tag) CONTAINS $sep THEN split(toString(b.graph_tag), $sep)
+                         WHEN tag_size = tag_str_len THEN [toString(b.graph_tag)]
+                         ELSE b.graph_tag
+                     END AS btags
+                WHERE any(t IN $graph_tags WHERE t IN btags)
+                WITH r, b, edge_id, target_id, source_id
+                """
+            else:
+                graph_tag_filter_with = ""
+                graph_tag_filter_rel = ""
 
-        # Initialize queue for BFS with (node, edge, depth) tuples
-        # edge is None for the starting node
-        queue = deque([(start_node, None, 0)])
+            workspace_label = self._get_workspace_label()
 
-        # True BFS implementation using a queue
-        while queue and len(visited_nodes) < max_nodes:
-            # Dequeue the next node to process
-            current_node, current_edge, current_depth = queue.popleft()
-
-            # Skip if already visited or exceeds max depth
-            if current_node.id in visited_nodes:
-                continue
-
-            if current_depth > max_depth:
-                logger.debug(
-                    f"[{self.workspace}] Skipping node at depth {current_depth} (max_depth: {max_depth})"
-                )
-                continue
-
-            # Add current node to result
-            result.nodes.append(current_node)
-            visited_nodes.add(current_node.id)
-
-            # Add edge to result if it exists and not already added
-            if current_edge and current_edge.id not in visited_edges:
-                result.edges.append(current_edge)
-                visited_edges.add(current_edge.id)
-
-            # Stop if we've reached the node limit
-            if len(visited_nodes) >= max_nodes:
-                result.is_truncated = True
-                logger.info(
-                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
-                )
-                break
-
-            # Get all edges and target nodes for the current node (even at max_depth)
+            # Reuse a single session for all queries to reduce overhead
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                workspace_label = self._get_workspace_label()
-                query = f"""
-                MATCH (a:`{workspace_label}` {{entity_id: $entity_id}})-[r]-(b)
-                WITH r, b, id(r) as edge_id, id(b) as target_id
-                RETURN r, b, edge_id, target_id
-                """
-                results = await session.run(query, entity_id=current_node.id)
+                # Get the starting node's data
+                # If multiple nodes share the same entity_id, pick a deterministic start node by degree.
+                node_result = None
+                start_node = None
+                try:
+                    # First, check if node exists without graph_tag filter for debugging
+                    # Try multiple query patterns to find the node
+                    workspace_label = self._get_workspace_label()
 
-                # Get all records and release database connection
-                records = await results.fetch(1000)  # Max neighbor nodes we can handle
-                await results.consume()  # Ensure results are consumed
+                    # Try 1: With workspace label
+                    check_query1 = f"""
+                    MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
+                    RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels
+                    LIMIT 5
+                    """
+                    check_result1 = await session.run(
+                        check_query1, entity_id=node_label
+                    )
+                    check_records1 = await check_result1.fetch(100)
+                    await check_result1.consume()
 
-                # Process all neighbors - capture all edges but only queue unvisited nodes
-                for record in records:
-                    rel = record["r"]
-                    edge_id = str(record["edge_id"])
+                    # Try 2: With base label
+                    check_query2 = f"""
+                    MATCH (n:`base` {{entity_id: $entity_id}})
+                    RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels
+                    LIMIT 5
+                    """
+                    check_result2 = await session.run(
+                        check_query2, entity_id=node_label
+                    )
+                    check_records2 = await check_result2.fetch(100)
+                    await check_result2.consume()
 
-                    if edge_id not in visited_edges:
-                        b_node = record["b"]
-                        target_id = b_node.get("entity_id")
+                    # Try 3: Without label constraint
+                    check_query3 = f"""
+                    MATCH (n {{entity_id: $entity_id}})
+                    RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels
+                    LIMIT 5
+                    """
+                    check_result3 = await session.run(
+                        check_query3, entity_id=node_label
+                    )
+                    check_records3 = await check_result3.fetch(100)
+                    await check_result3.consume()
 
-                        if target_id:  # Only process if target node has entity_id
-                            # Create KnowledgeGraphNode for target
-                            target_node = KnowledgeGraphNode(
-                                id=f"{target_id}",
-                                labels=[target_id],
-                                properties=dict(b_node._properties),
+                    all_records = check_records1 + check_records2 + check_records3
+
+                    if all_records:
+                        logger.info(
+                            f"[{self.workspace}] Found {len(all_records)} node(s) with entity_id '{node_label}': "
+                        )
+                        for i, r in enumerate(all_records[:5], 1):
+                            labels_str = ", ".join(r.get("labels", []))
+                            graph_tag = r.get("graph_tag", "NULL")
+                            logger.info(
+                                f"[{self.workspace}]   Node {i}: labels=[{labels_str}], graph_tag={graph_tag}"
                             )
-
-                            # Create KnowledgeGraphEdge
-                            target_edge = KnowledgeGraphEdge(
-                                id=f"{edge_id}",
-                                type=rel.type,
-                                source=f"{current_node.id}",
-                                target=f"{target_id}",
-                                properties=dict(rel),
-                            )
-
-                            # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
-                            sorted_pair = tuple(sorted([current_node.id, target_id]))
-
-                            # Check if the same edge already exists (considering undirectedness)
-                            if sorted_pair not in visited_edge_pairs:
-                                # Only add the edge if the target node is already in the result or will be added
-                                if target_id in visited_nodes or (
-                                    target_id not in visited_nodes
-                                    and current_depth < max_depth
-                                ):
-                                    result.edges.append(target_edge)
-                                    visited_edges.add(edge_id)
-                                    visited_edge_pairs.add(sorted_pair)
-
-                            # Only add unvisited nodes to the queue for further expansion
-                            if target_id not in visited_nodes:
-                                # Only add to queue if we're not at max depth yet
-                                if current_depth < max_depth:
-                                    # Add node to queue with incremented depth
-                                    # Edge is already added to result, so we pass None as edge
-                                    queue.append((target_node, None, current_depth + 1))
-                                else:
-                                    # At max depth, we've already added the edge but we don't add the node
-                                    # This prevents adding nodes beyond max_depth to the result
-                                    logger.debug(
-                                        f"[{self.workspace}] Node {target_id} beyond max depth {max_depth}, edge added but node not included"
-                                    )
-                            else:
-                                # If target node already exists in result, we don't need to add it again
-                                logger.debug(
-                                    f"[{self.workspace}] Node {target_id} already visited, edge added but node not queued"
+                    else:
+                        logger.warning(
+                            f"[{self.workspace}] No node found with entity_id: {node_label} "
+                            f"(tried labels: '{workspace_label}', 'base', and no label constraint)"
+                        )
+                        # Try to find any nodes with similar entity_id for debugging
+                        similar_query = f"""
+                        MATCH (n)
+                        WHERE n.entity_id CONTAINS $partial_id
+                        RETURN n.entity_id as entity_id, labels(n) as labels, n.graph_tag as graph_tag
+                        LIMIT 10
+                        """
+                        similar_result = await session.run(
+                            similar_query,
+                            partial_id=(
+                                node_label[:5] if len(node_label) > 5 else node_label
+                            ),
+                        )
+                        similar_records = await similar_result.fetch(100)
+                        await similar_result.consume()
+                        if similar_records:
+                            logger.info(
+                                f"[{self.workspace}] Found {len(similar_records)} similar node(s) (partial match): "
+                                + ", ".join(
+                                    [
+                                        f"entity_id='{r.get('entity_id')}'"
+                                        for r in similar_records[:5]
+                                    ]
                                 )
+                            )
+                        return result
+
+                    # Use the same label pattern that found the node
+                    # Prefer workspace_label, fallback to base
+                    # Determine which query found nodes
+                    effective_label = workspace_label
+                    if not check_records1 and check_records2:
+                        effective_label = "base"
+                    elif not check_records1 and not check_records2 and check_records3:
+                        # If found without label, try with workspace_label first
+                        effective_label = workspace_label
+
+                    if has_graph_tag_filter:
+                        query = f"""
+                        MATCH (n:`{effective_label}` {{entity_id: $entity_id}})
+                        {graph_tag_filter_with}
+                        OPTIONAL MATCH (n:`{effective_label}`)-[r]-()
+                        WITH n, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        RETURN id(n) as node_id, n
+                        """
+                        logger.info(
+                            f"[{self.workspace}] Executing query with graph_tag filter: entity_id={node_label}, graph_tags={graph_tags}, label={effective_label}"
+                        )
+                        logger.debug(f"[{self.workspace}] Query: {query}")
+                        node_result = await session.run(
+                            query,
+                            entity_id=node_label,
+                            graph_tags=graph_tags,
+                            sep=GRAPH_FIELD_SEP,
+                        )
+                    else:
+                        query = f"""
+                        MATCH (n:`{effective_label}` {{entity_id: $entity_id}})
+                        OPTIONAL MATCH (n:`{effective_label}`)-[r]-()
+                        WITH n, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        RETURN id(n) as node_id, n
+                        """
+                        logger.info(
+                            f"[{self.workspace}] Executing query without graph_tag filter: entity_id={node_label}, label={effective_label}"
+                        )
+                        node_result = await session.run(query, entity_id=node_label)
+
+                    node_record = await node_result.single()
+                    if not node_record:
+                        logger.warning(
+                            f"[{self.workspace}] No node found with entity_id: {node_label} after applying graph_tag filter in _robust_fallback"
+                        )
+                        if has_graph_tag_filter:
+                            logger.info(
+                                f"[{self.workspace}] Query parameters: entity_id={node_label}, graph_tags={graph_tags}, sep={GRAPH_FIELD_SEP}"
+                            )
+                            logger.info(
+                                f"[{self.workspace}] This suggests the node exists but doesn't match the graph_tag filter. "
+                                f"Try querying without graph_tags parameter."
+                            )
+                        return result
+
+                    # Create initial KnowledgeGraphNode
+                    # Use Neo4j internal node id as stable unique id (align with APOC path output).
+                    start_node = KnowledgeGraphNode(
+                        id=str(node_record["node_id"]),
+                        labels=[node_record["n"].get("entity_id")],
+                        properties=dict(node_record["n"]._properties),
+                    )
+                    logger.debug(
+                        f"[{self.workspace}] Found start node: id={start_node.id}, entity_id={start_node.labels[0] if start_node.labels else 'N/A'}"
+                    )
+                except Exception as query_error:
+                    logger.error(
+                        f"[{self.workspace}] Error executing start node query for entity_id {node_label}: {query_error}",
+                        exc_info=True,
+                    )
+                    if node_result:
+                        try:
+                            await node_result.consume()
+                        except Exception:
+                            pass
+                    raise
+                finally:
+                    if node_result:
+                        await node_result.consume()
+
+                # Process nodes level by level for batch querying
+                if start_node is None:
+                    logger.error(
+                        f"[{self.workspace}] start_node is None after query, this should not happen"
+                    )
+                    return result
+
+                current_level = 0
+                nodes_at_current_level = [(start_node, 0)]
+
+                while nodes_at_current_level and len(visited_nodes) < max_nodes:
+                    # Process all nodes at the current level
+                    nodes_to_process = []
+                    for node, depth in nodes_at_current_level:
+                        if node.id in visited_nodes or depth > max_depth:
+                            continue
+
+                        if len(visited_nodes) >= max_nodes:
+                            result.is_truncated = True
+                            break
+
+                        # Add current node to result
+                        result.nodes.append(node)
+                        visited_nodes.add(node.id)
+                        nodes_to_process.append((node, depth))
+
+                    if len(visited_nodes) >= max_nodes:
+                        result.is_truncated = True
+                        logger.info(
+                            f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
+                        )
+                        break
+
+                    if not nodes_to_process:
+                        break
+
+                    # Batch query: get all neighbors for all nodes at current level in one query
+                    node_ids = [
+                        int(node.id)
+                        for node, depth in nodes_to_process
+                        if depth < max_depth
+                    ]
+                    next_level_nodes = []
+
+                    if node_ids:
+                        # Build batch query using UNWIND to process multiple nodes at once
+                        batch_result = None
+                        if has_graph_tag_filter:
+                            batch_query = f"""
+                            UNWIND $node_ids AS node_id
+                            MATCH (a)
+                            WHERE id(a) = node_id
+                            MATCH (a)-[r]-(b)
+                            WITH a, r, b, id(a) as source_id, id(r) as edge_id, id(b) as target_id
+                            {graph_tag_filter_rel}
+                            RETURN source_id, r, b, edge_id, target_id
+                            """
+                            batch_result = await session.run(
+                                batch_query,
+                                node_ids=node_ids,
+                                graph_tags=graph_tags,
+                                sep=GRAPH_FIELD_SEP,
+                            )
                         else:
-                            logger.warning(
-                                f"[{self.workspace}] Skipping edge {edge_id} due to missing entity_id on target node"
+                            batch_query = f"""
+                            UNWIND $node_ids AS node_id
+                            MATCH (a)
+                            WHERE id(a) = node_id
+                            MATCH (a)-[r]-(b)
+                            RETURN id(a) as source_id, r, b, id(r) as edge_id, id(b) as target_id
+                            """
+                            batch_result = await session.run(
+                                batch_query,
+                                node_ids=node_ids,
                             )
 
-        logger.info(
-            f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
-        )
-        return result
+                        try:
+                            # Process all records from batch query
+                            records = await batch_result.fetch(10000)  # Increased batch size
+
+                            # Group neighbors by source node for efficient processing
+                            neighbors_by_source = {}
+                            for record in records:
+                                source_id = str(record["source_id"])
+                                if source_id not in neighbors_by_source:
+                                    neighbors_by_source[source_id] = []
+                                neighbors_by_source[source_id].append(record)
+
+                            # Process neighbors for each source node
+                            for node, depth in nodes_to_process:
+                                if depth >= max_depth:
+                                    continue
+
+                                source_id = node.id
+                                neighbors = neighbors_by_source.get(source_id, [])
+
+                                for record in neighbors:
+                                    rel = record["r"]
+                                    edge_id = str(record["edge_id"])
+                                    b_node = record["b"]
+                                    target_id = b_node.get("entity_id")
+                                    target_node_id = str(record["target_id"])
+
+                                    if not target_id:  # Skip if target node has no entity_id
+                                        continue
+
+                                    # Skip if edge already processed
+                                    if edge_id in visited_edges:
+                                        continue
+
+                                    # Create KnowledgeGraphNode for target
+                                    target_node = KnowledgeGraphNode(
+                                        id=target_node_id,
+                                        labels=[target_id],
+                                        properties=dict(b_node._properties),
+                                    )
+
+                                    # Create KnowledgeGraphEdge
+                                    target_edge = KnowledgeGraphEdge(
+                                        id=edge_id,
+                                        type=rel.type,
+                                        source=source_id,
+                                        target=target_node_id,
+                                        properties=dict(rel),
+                                    )
+
+                                    # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
+                                    sorted_pair = tuple(
+                                        sorted([source_id, target_node_id])
+                                    )
+
+                                    # Check if the same edge already exists (considering undirectedness)
+                                    if sorted_pair not in visited_edge_pairs:
+                                        # Only add edges whose endpoints will be included in `result.nodes`.
+                                        will_include_target = (
+                                            target_node_id in visited_nodes
+                                            or (
+                                                target_node_id not in visited_nodes
+                                                and depth < max_depth
+                                                and (
+                                                    len(visited_nodes)
+                                                    + len(next_level_nodes)
+                                                    < max_nodes
+                                                )
+                                            )
+                                        )
+                                        if will_include_target:
+                                            result.edges.append(target_edge)
+                                            visited_edges.add(edge_id)
+                                            visited_edge_pairs.add(sorted_pair)
+
+                                    # Only add unvisited nodes to the next level
+                                    if target_node_id not in visited_nodes:
+                                        if (
+                                            depth < max_depth
+                                            and len(visited_nodes)
+                                            + len(next_level_nodes)
+                                            < max_nodes
+                                        ):
+                                            next_level_nodes.append(
+                                                (target_node, depth + 1)
+                                            )
+
+                        finally:
+                            if batch_result:
+                                await batch_result.consume()
+
+                    # Move to next level
+                    current_level += 1
+                    nodes_at_current_level = (
+                        next_level_nodes if current_level <= max_depth else []
+                    )
+
+                logger.info(
+                    f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+                )
+                return result
+
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error in _robust_fallback for entity_id {node_label}: {e}",
+                exc_info=True,
+            )
+            raise
 
     async def get_all_labels(self) -> list[str]:
         """
