@@ -392,7 +392,7 @@ export const getPopularLabels = async (
       if (trimmed) params.append('graph_tags', trimmed)
     }
   }
-  const response = await axiosInstance.get(`/graph/label/popular?${params.toString()}`)
+  const response = await axiosInstance.get(`/graph/label/normal?${params.toString()}`)
   return response.data
 }
 
@@ -671,10 +671,16 @@ export const uploadDocument = async (
     formData.append('graph_tag', graphTag.trim())
   }
 
+  // Calculate timeout based on file size: 1 minute per 10MB, minimum 5 minutes
+  // For a 9MB file, this gives ~5 minutes timeout
+  const fileSizeMB = file.size / (1024 * 1024)
+  const timeout = Math.max(5 * 60 * 1000, Math.ceil(fileSizeMB / 10) * 60 * 1000) // milliseconds
+
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     },
+    timeout,
     // prettier-ignore
     onUploadProgress:
       onUploadProgress !== undefined

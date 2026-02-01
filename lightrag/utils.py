@@ -379,6 +379,10 @@ class EmbeddingFunc:
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
 
+        # Inject max_tokens (as max_tokens parameter) if max_token_size is set and not already provided
+        if self.max_token_size is not None and "max_tokens" not in kwargs:
+            kwargs["max_tokens"] = self.max_token_size
+
         return await self.func(*args, **kwargs)
 
 

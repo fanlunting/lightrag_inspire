@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Any, final, Union
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import pipmaster as pm
 import configparser
 from contextlib import asynccontextmanager
@@ -760,11 +761,23 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
-                                        # Ensure new fields exist with default values
+                                        # Ensure all required fields exist with defaults
+                                        if "content_summary" not in data:
+                                            data["content_summary"] = ""
+                                        if "content_length" not in data:
+                                            data["content_length"] = 0
+                                        if "created_at" not in data:
+                                            data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                                        if "updated_at" not in data:
+                                            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                                        if "status" not in data:
+                                            data["status"] = DocStatus.PENDING
                                         if "metadata" not in data:
                                             data["metadata"] = {}
                                         if "error_msg" not in data:
                                             data["error_msg"] = None
+                                        if "chunks_list" not in data:
+                                            data["chunks_list"] = []
 
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
@@ -816,11 +829,23 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         # If file_path is not in data, use document id as file path
                                         if "file_path" not in data:
                                             data["file_path"] = "no-file-path"
-                                        # Ensure new fields exist with default values
+                                        # Ensure all required fields exist with defaults
+                                        if "content_summary" not in data:
+                                            data["content_summary"] = ""
+                                        if "content_length" not in data:
+                                            data["content_length"] = 0
+                                        if "created_at" not in data:
+                                            data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                                        if "updated_at" not in data:
+                                            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                                        if "status" not in data:
+                                            data["status"] = DocStatus.PENDING
                                         if "metadata" not in data:
                                             data["metadata"] = {}
                                         if "error_msg" not in data:
                                             data["error_msg"] = None
+                                        if "chunks_list" not in data:
+                                            data["chunks_list"] = []
 
                                         result[doc_id] = DocProcessingStatus(**data)
                                 except (json.JSONDecodeError, KeyError) as e:
@@ -859,7 +884,13 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     @redis_retry
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update document status data"""
+        """
+        Insert or update document status data.
+        
+        Note: This method merges updates with existing data to preserve all fields,
+        rather than completely replacing records. This prevents missing required fields
+        when doing partial updates.
+        """
         if not data:
             return
 
@@ -873,8 +904,26 @@ class RedisDocStatusStorage(DocStatusStorage):
                     if "chunks_list" not in doc_data:
                         doc_data["chunks_list"] = []
 
+                # Get existing data for keys that exist to merge updates
                 pipe = redis.pipeline()
-                for k, v in data.items():
+                for k in data.keys():
+                    pipe.get(f"{self.final_namespace}:{k}")
+                existing_data_list = await pipe.execute()
+
+                # Merge existing data with new data
+                pipe = redis.pipeline()
+                for i, (k, v) in enumerate(data.items()):
+                    existing_json = existing_data_list[i]
+                    if existing_json:
+                        # Merge with existing data (new data takes precedence)
+                        try:
+                            existing_data = json.loads(existing_json)
+                            existing_data.update(v)
+                            v = existing_data
+                        except json.JSONDecodeError:
+                            # If existing data is corrupted, just use new data
+                            pass
+                    
                     pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
                 await pipe.execute()
             except json.JSONDecodeError as e:
@@ -982,10 +1031,23 @@ class RedisDocStatusStorage(DocStatusStorage):
                                     data.pop("content", None)
                                     if "file_path" not in data:
                                         data["file_path"] = "no-file-path"
+                                    # Ensure all required fields exist with defaults
+                                    if "content_summary" not in data:
+                                        data["content_summary"] = ""
+                                    if "content_length" not in data:
+                                        data["content_length"] = 0
+                                    if "created_at" not in data:
+                                        data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                                    if "updated_at" not in data:
+                                        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                                    if "status" not in data:
+                                        data["status"] = DocStatus.PENDING
                                     if "metadata" not in data:
                                         data["metadata"] = {}
                                     if "error_msg" not in data:
                                         data["error_msg"] = None
+                                    if "chunks_list" not in data:
+                                        data["chunks_list"] = []
 
                                     # Calculate sort key for sorting (but don't add to data)
                                     if sort_field == "id":

@@ -680,7 +680,17 @@ def create_app(args):
 
         # Step 2: Apply priority (user config > provider default)
         # For max_token_size: explicit env var > provider default > None
-        final_max_token_size = args.embedding_token_limit or provider_max_token_size
+        # Check environment variable directly first, then args, then provider default
+        if os.getenv("EMBEDDING_TOKEN_LIMIT"):
+            try:
+                final_max_token_size = int(os.getenv("EMBEDDING_TOKEN_LIMIT"))
+                logger.debug(f"Using EMBEDDING_TOKEN_LIMIT from env: {final_max_token_size}")
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid EMBEDDING_TOKEN_LIMIT value, falling back to args or provider default")
+                final_max_token_size = args.embedding_token_limit or provider_max_token_size
+        else:
+            final_max_token_size = args.embedding_token_limit or provider_max_token_size
+        
         # For embedding_dim: user config (always has value) takes priority
         # Only use provider default if user config is explicitly None (which shouldn't happen)
         final_embedding_dim = (
@@ -688,7 +698,8 @@ def create_app(args):
         )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
-        async def optimized_embedding_function(texts, embedding_dim=None):
+        # Accept **kwargs to receive max_tokens and other parameters injected by EmbeddingFunc
+        async def optimized_embedding_function(texts, embedding_dim=None, **kwargs):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -792,12 +803,14 @@ def create_app(args):
                         if isinstance(openai_embed, EmbeddingFunc)
                         else openai_embed
                     )
+                    # Pass through max_tokens and other kwargs from EmbeddingFunc
                     return await actual_func(
                         texts,
                         model=model,
                         base_url=host,
                         api_key=api_key,
                         embedding_dim=embedding_dim,
+                        **kwargs,  # Include max_tokens and other parameters
                     )
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -810,10 +823,13 @@ def create_app(args):
             send_dimensions=False,  # Will be set later based on binding requirements
         )
 
-        # Log final embedding configuration
+        # Log final embedding configuration with detailed source info
+        env_value = os.getenv("EMBEDDING_TOKEN_LIMIT")
         logger.info(
             f"Embedding config: binding={binding} model={model} "
-            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}"
+            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size} "
+            f"(EMBEDDING_TOKEN_LIMIT env={env_value}, args.embedding_token_limit={args.embedding_token_limit}, "
+            f"provider_default={provider_max_token_size})"
         )
 
         return embedding_func_instance
@@ -858,14 +874,24 @@ def create_app(args):
     if args.embedding_binding == "openai":
         from lightrag.llm.openai import openai_embed
         
+        # Determine max_token_size: prioritize EMBEDDING_TOKEN_LIMIT env var, then args, then default to 8192
+        # Note: The EmbeddingFunc wrapper will inject this as max_tokens parameter to openai_embed
+        max_token_size = args.embedding_token_limit or 8192
+        if os.getenv("EMBEDDING_TOKEN_LIMIT"):
+            try:
+                max_token_size = int(os.getenv("EMBEDDING_TOKEN_LIMIT"))
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid EMBEDDING_TOKEN_LIMIT value, using {max_token_size}")
+        
         embedding_func = EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", str(args.embedding_dim))),
-            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", str(args.embedding_token_limit or 8192))),
-            func=lambda texts: openai_embed(
+            max_token_size=max_token_size,
+            func=lambda texts, **kwargs: openai_embed(
                 texts,
                 model=args.embedding_model,
                 base_url=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
+                **kwargs,  # Pass through max_tokens and other parameters injected by EmbeddingFunc
             ),
         )
     else:

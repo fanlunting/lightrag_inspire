@@ -116,7 +116,15 @@
         "removeFile": "Remove file",
         "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)",
         "duplicateFile": "File name already exists in server cache"
-      }
+      },
+      "status": {
+        "pending": "Pending",
+        "processing": "Processing",
+        "preprocessed": "Preprocessed",
+        "processed": "Processed",
+        "failed": "Failed"
+      },
+      "processingFailed": "Processing failed"
     },
     "documentManager": {
       "title": "Document Management",

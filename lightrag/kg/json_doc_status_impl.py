@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 from typing import Any, Union, final
+from datetime import datetime, timezone
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -110,11 +111,23 @@ class JsonDocStatusStorage(DocStatusStorage):
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
+                        # Ensure all required fields exist with defaults
+                        if "content_summary" not in data:
+                            data["content_summary"] = ""
+                        if "content_length" not in data:
+                            data["content_length"] = 0
+                        if "created_at" not in data:
+                            data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                        if "updated_at" not in data:
+                            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if "status" not in data:
+                            data["status"] = DocStatus.PENDING
                         if "metadata" not in data:
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+                        if "chunks_list" not in data:
+                            data["chunks_list"] = []
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -139,11 +152,23 @@ class JsonDocStatusStorage(DocStatusStorage):
                         # If file_path is not in data, use document id as file path
                         if "file_path" not in data:
                             data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
+                        # Ensure all required fields exist with defaults
+                        if "content_summary" not in data:
+                            data["content_summary"] = ""
+                        if "content_length" not in data:
+                            data["content_length"] = 0
+                        if "created_at" not in data:
+                            data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                        if "updated_at" not in data:
+                            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if "status" not in data:
+                            data["status"] = DocStatus.PENDING
                         if "metadata" not in data:
                             data["metadata"] = {}
                         if "error_msg" not in data:
                             data["error_msg"] = None
+                        if "chunks_list" not in data:
+                            data["chunks_list"] = []
                         result[k] = DocProcessingStatus(**data)
                     except KeyError as e:
                         logger.error(
@@ -182,6 +207,10 @@ class JsonDocStatusStorage(DocStatusStorage):
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+        
+        Note: This method merges updates with existing data to preserve all fields,
+        rather than completely replacing records. This prevents missing required fields
+        when doing partial updates.
         """
         if not data:
             return
@@ -195,7 +224,17 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in data.items():
                 if "chunks_list" not in doc_data:
                     doc_data["chunks_list"] = []
-            self._data.update(data)
+                
+                # Merge with existing data if it exists to preserve all fields
+                if doc_id in self._data:
+                    # Merge existing data with new data (new data takes precedence)
+                    existing_data = self._data[doc_id].copy()
+                    existing_data.update(doc_data)
+                    self._data[doc_id] = existing_data
+                else:
+                    # New document, just add it
+                    self._data[doc_id] = doc_data
+            
             await set_all_update_flags(self.final_namespace)
 
         await self.index_done_callback()
@@ -268,12 +307,27 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Prepare document data
                     data = doc_data.copy()
                     data.pop("content", None)
+                    
+                    # Ensure all required fields exist with defaults
                     if "file_path" not in data:
                         data["file_path"] = "no-file-path"
+                    if "content_summary" not in data:
+                        data["content_summary"] = ""
+                    if "content_length" not in data:
+                        data["content_length"] = 0
+                    if "created_at" not in data:
+                        # Use updated_at if available, otherwise use current time
+                        data["created_at"] = data.get("updated_at", datetime.now(timezone.utc).isoformat())
+                    if "updated_at" not in data:
+                        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    if "status" not in data:
+                        data["status"] = DocStatus.PENDING
                     if "metadata" not in data:
                         data["metadata"] = {}
                     if "error_msg" not in data:
                         data["error_msg"] = None
+                    if "chunks_list" not in data:
+                        data["chunks_list"] = []
 
                     doc_status = DocProcessingStatus(**data)
 

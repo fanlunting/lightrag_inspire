@@ -14,6 +14,7 @@ from openai import (
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
+    APIStatusError,
 )
 from tenacity import (
     retry,
@@ -622,6 +623,7 @@ async def openai_embed(
     embedding_dim: int | None = None,
     client_configs: dict[str, Any] | None = None,
     token_tracker: Any | None = None,
+    max_tokens: int | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API.
 
@@ -640,6 +642,10 @@ async def openai_embed(
             These will override any default configurations but will be overridden by
             explicit parameters (api_key, base_url).
         token_tracker: Optional token usage tracker for monitoring API usage.
+        max_tokens: Maximum tokens per text. If None, uses environment variable OPENAI_EMBED_MAX_TOKENS
+            or defaults to 512. Texts exceeding this limit will be truncated.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            from max_token_size. Do NOT manually pass this parameter when calling via EmbeddingFunc.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -649,6 +655,57 @@ async def openai_embed(
         RateLimitError: If the OpenAI API rate limit is exceeded.
         APITimeoutError: If the OpenAI API request times out.
     """
+    # Set max_tokens: prioritize provided value (from decorator), then environment variable, then default to 512
+    # IMPORTANT: The decorator injects max_tokens from max_token_size, so this should rarely be None
+    if max_tokens is None:
+        max_tokens = int(os.getenv("OPENAI_EMBED_MAX_TOKENS", "512"))
+        logger.debug(f"max_tokens not provided, using value from OPENAI_EMBED_MAX_TOKENS env var or default: {max_tokens}")
+    else:
+        logger.debug(f"Using max_tokens from parameter: {max_tokens}")
+    
+    # Validate and truncate texts that exceed token limit
+    tokenizer = None
+    processed_texts = []
+    truncated_count = 0
+    
+    # Initialize tokenizer lazily (use cl100k_base encoding for embedding models)
+    try:
+        import tiktoken
+        tokenizer = tiktoken.get_encoding("cl100k_base")
+    except (ImportError, Exception) as e:
+        logger.warning(f"Failed to initialize tiktoken: {e}. Skipping token validation.")
+    
+    for text in texts:
+        if not text:
+            processed_texts.append(text)
+            continue
+        
+        if tokenizer is not None:
+            tokens = tokenizer.encode(text)
+            if len(tokens) > max_tokens:
+                # Truncate text to fit within token limit
+                truncated_tokens = tokens[:max_tokens]
+                truncated_text = tokenizer.decode(truncated_tokens)
+                processed_texts.append(truncated_text)
+                truncated_count += 1
+                logger.warning(
+                    f"Text truncated from {len(tokens)} to {max_tokens} tokens "
+                    f"(model: {model}, max_tokens: {max_tokens})"
+                )
+            else:
+                processed_texts.append(text)
+        else:
+            # If tokenizer is not available, use original text (no validation)
+            # This is risky - log a warning
+            logger.warning(
+                f"Tokenizer not available, skipping token validation for text of length {len(text)}. "
+                f"This may cause API errors if text exceeds {max_tokens} tokens."
+            )
+            processed_texts.append(text)
+    
+    if truncated_count > 0:
+        logger.info(f"Truncated {truncated_count} out of {len(texts)} texts to fit within {max_tokens} token limit")
+    
     # Create the OpenAI client
     openai_async_client = create_openai_async_client(
         api_key=api_key, base_url=base_url, client_configs=client_configs
@@ -658,7 +715,7 @@ async def openai_embed(
         # Prepare API call parameters
         api_params = {
             "model": model,
-            "input": texts,
+            "input": processed_texts,
             "encoding_format": "base64",
         }
 
@@ -666,8 +723,66 @@ async def openai_embed(
         if embedding_dim is not None:
             api_params["dimensions"] = embedding_dim
 
-        # Make API call
-        response = await openai_async_client.embeddings.create(**api_params)
+        # Make API call with error handling for token limit issues
+        try:
+            response = await openai_async_client.embeddings.create(**api_params)
+        except APIStatusError as e:
+            # Handle 413 error (token limit exceeded)
+            if e.status_code == 413:
+                # Try to extract error message from various possible attributes
+                error_message = str(e)
+                if hasattr(e, "response") and hasattr(e.response, "json"):
+                    try:
+                        error_body = e.response.json()
+                        if isinstance(error_body, dict):
+                            error_message = error_body.get("message", "") or error_body.get("error", {}).get("message", "") or str(e)
+                    except:
+                        pass
+                elif hasattr(e, "body"):
+                    if isinstance(e.body, dict):
+                        error_message = e.body.get("message", "") or str(e)
+                    else:
+                        error_message = str(e.body) if e.body else str(e)
+                
+                # Try to extract actual token limit from error message
+                import re
+                token_limit_match = re.search(r'(\d+)\s*tokens?', error_message, re.IGNORECASE)
+                if token_limit_match:
+                    actual_limit = int(token_limit_match.group(1))
+                    if actual_limit < max_tokens:
+                        logger.warning(
+                            f"API returned 413 error: {error_message}. "
+                            f"Detected actual token limit: {actual_limit}. "
+                            f"Retrying with reduced limit from {max_tokens} to {actual_limit}. "
+                            f"Note: Some texts may have been truncated. Consider setting EMBEDDING_TOKEN_LIMIT={actual_limit} in your .env file."
+                        )
+                        # Recursively call with reduced limit
+                        # Use processed_texts if available, otherwise use original texts
+                        # This ensures we don't re-process texts that were already truncated
+                        return await openai_embed(
+                            texts=processed_texts if processed_texts else texts,
+                            model=model,
+                            base_url=base_url,
+                            api_key=api_key,
+                            embedding_dim=embedding_dim,
+                            client_configs=client_configs,
+                            token_tracker=token_tracker,
+                            max_tokens=actual_limit,
+                        )
+                
+                # If we can't extract the limit, log detailed error and raise
+                logger.error(
+                    f"API returned 413 error: {error_message}. "
+                    f"Current max_tokens setting: {max_tokens}. "
+                    f"Please check your .env file and ensure EMBEDDING_TOKEN_LIMIT matches the API's actual limit. "
+                    f"If using OpenAI embedding models, text-embedding-3-large supports up to 8192 tokens, "
+                    f"while text-embedding-3-small supports up to 8192 tokens. "
+                    f"Some older models may have lower limits (e.g., 512 tokens)."
+                )
+                raise
+            
+            # Re-raise other APIStatusError
+            raise
 
         if token_tracker and hasattr(response, "usage"):
             token_counts = {

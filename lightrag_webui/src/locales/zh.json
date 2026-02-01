@@ -116,7 +116,15 @@
         "removeFile": "移除文件",
         "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）",
         "duplicateFile": "文件名与服务器上的缓存重复"
-      }
+      },
+      "status": {
+        "pending": "待处理",
+        "processing": "处理中",
+        "preprocessed": "预处理完成",
+        "processed": "处理完成",
+        "failed": "处理失败"
+      },
+      "processingFailed": "处理失败"
     },
     "documentManager": {
       "title": "文档管理",

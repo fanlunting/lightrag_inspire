@@ -156,7 +156,7 @@ def chunking_by_file_format(
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
-    max_token_size: int = 8096,
+    max_token_size: int = 8192,
     file_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """

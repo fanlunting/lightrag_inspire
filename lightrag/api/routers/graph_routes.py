@@ -143,7 +143,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
         limit: int = Query(
-            300, description="Maximum number of popular labels to return", ge=1, le=1000
+            100, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
         graph_tags: Optional[List[str]] = Query(
             None,
@@ -170,6 +170,33 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error getting popular labels: {str(e)}"
             )
 
+    @router.get("/graph/label/normal", dependencies=[Depends(combined_auth)])
+    async def get_normal_labels(
+        limit: int = Query(
+            100, description="Maximum number of normal labels to return", ge=1, le=1000
+        ),
+        graph_tags: Optional[List[str]] = Query(
+            None,
+            description="Optional graph_tag filters. Repeated query param allowed. Empty/omitted means no filtering.",
+        ),
+    ):
+        """
+        Get normal labels by node degree (most connected entities)
+
+        Args:
+            limit (int): Maximum number of labels to return (default: 100, max: 1000)
+        """
+        try:
+            return await rag.chunk_entity_relation_graph.get_normal_labels(
+                limit, graph_tags=graph_tags
+            )
+        except Exception as e:
+            logger.error(f"Error getting normal labels: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting normal labels: {str(e)}"
+            )
+    
     @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
     async def search_labels(
         q: str = Query(..., description="Search query string"),
@@ -297,6 +324,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             "jsonl_import",
             description="A logical file_path recorded into node/edge metadata",
         ),
+        batch_size: int = Form(
+            200, description="Batch size for processing (default: 200, recommended: 100-500)"
+        ),
     ):
         """
         Import KG triples from a JSONL file.
@@ -351,6 +381,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise ValueError("relation must be a string or an object with {type: ...}")
 
         normalized_tag = (graph_tag or "").strip() or "default"
+        
+        # Validate and adjust batch size
+        batch_size = max(1, min(batch_size, 1000))  # Clamp between 1 and 1000
 
         entities_created_or_updated = 0
         relations_created_or_updated = 0
@@ -381,9 +414,42 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 parts.append(f"{k}: {v}")
             return "；".join(parts)
         
+        # Batch processing collections
+        entity_batch: list[tuple[str, dict[str, Any]]] = []
+        relation_batch: list[tuple[str, str, dict[str, Any]]] = []
+        
+        async def _process_batch():
+            """Process accumulated batch of entities and relations."""
+            nonlocal entities_created_or_updated, relations_created_or_updated
+            
+            if entity_batch:
+                from lightrag.utils_graph import abatch_upsert_entities
+                count = await abatch_upsert_entities(
+                    rag.chunk_entity_relation_graph,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    entity_batch,
+                    entity_chunks_storage=None,
+                    relation_chunks_storage=None,
+                )
+                entities_created_or_updated += count
+                entity_batch.clear()
+            
+            if relation_batch:
+                from lightrag.utils_graph import abatch_upsert_relations
+                count = await abatch_upsert_relations(
+                    rag.chunk_entity_relation_graph,
+                    rag.entities_vdb,
+                    rag.relationships_vdb,
+                    relation_batch,
+                    relation_chunks_storage=None,
+                )
+                relations_created_or_updated += count
+                relation_batch.clear()
+        
         async def _process_line(line: str, line_no: int):
-            """Process a single line from JSONL file."""
-            nonlocal entities_created_or_updated, relations_created_or_updated, lines_ok
+            """Process a single line from JSONL file and add to batch."""
+            nonlocal lines_ok
             
             try:
                 obj = json.loads(line)
@@ -397,10 +463,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 h_desc = _desc_from_props(h_name, h_props)
                 t_desc = _desc_from_props(t_name, t_props)
 
-                await aupsert_entity(
-                    rag.chunk_entity_relation_graph,
-                    rag.entities_vdb,
-                    rag.relationships_vdb,
+                # Add entities to batch
+                entity_batch.append((
                     h_name,
                     {
                         **h_props,
@@ -410,13 +474,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                         "source_id": "jsonl_import",
                         "graph_tag": normalized_tag,
                     },
-                )
-                entities_created_or_updated += 1
-
-                await aupsert_entity(
-                    rag.chunk_entity_relation_graph,
-                    rag.entities_vdb,
-                    rag.relationships_vdb,
+                ))
+                entity_batch.append((
                     t_name,
                     {
                         **t_props,
@@ -426,9 +485,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                         "source_id": "jsonl_import",
                         "graph_tag": normalized_tag,
                     },
-                )
-                entities_created_or_updated += 1
+                ))
 
+                # Add relation to batch
                 rel_keywords = r_type
                 rel_desc_parts = [f"type: {r_type}"]
                 for k, v in r_props.items():
@@ -437,10 +496,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     rel_desc_parts.append(f"{k}: {v}")
                 rel_desc = "；".join(rel_desc_parts)
 
-                await aupsert_relation(
-                    rag.chunk_entity_relation_graph,
-                    rag.entities_vdb,
-                    rag.relationships_vdb,
+                relation_batch.append((
                     h_name,
                     t_name,
                     {
@@ -451,10 +507,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                         "graph_tag": normalized_tag,
                         **r_props,
                     },
-                )
-                relations_created_or_updated += 1
+                ))
 
                 lines_ok += 1
+                
+                # Process batch when it reaches the batch size
+                if len(entity_batch) >= batch_size * 2 or len(relation_batch) >= batch_size:
+                    await _process_batch()
+                    
             except Exception as e:
                 errors.append(
                     {
@@ -483,6 +543,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 line = line.strip()
                 if line:  # Skip empty lines
                     await _process_line(line, line_no)
+        
+        # Process remaining batch
+        await _process_batch()
 
         return {
             "status": "success" if not errors else "partial_success",

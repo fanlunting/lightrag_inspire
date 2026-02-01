@@ -1382,6 +1382,239 @@ async def aupsert_entity(
         )
 
 
+async def abatch_upsert_entities(
+    chunk_entity_relation_graph,
+    entities_vdb,
+    relationships_vdb,
+    entities: list[tuple[str, dict[str, Any]]],
+    *,
+    entity_chunks_storage=None,
+    relation_chunks_storage=None,
+) -> int:
+    """
+    Batch upsert multiple entities efficiently.
+    
+    Args:
+        entities: List of (entity_name, entity_data) tuples
+    Returns:
+        Number of entities processed
+    """
+    if not entities:
+        return 0
+    
+    graph_tag = _normalize_graph_tag(entities[0][1].get("graph_tag", "default"))
+    now = int(time.time())
+    
+    # Collect all entity names for locking
+    entity_names = [name for name, _ in entities]
+    workspace = entities_vdb.global_config.get("workspace", "")
+    namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    
+    # Use a single lock for all entities in this batch (simplified approach)
+    # For better concurrency, we could use multiple locks, but this is simpler
+    lock_keys = [f"{name}@{graph_tag}" for name in entity_names]
+    async with get_storage_keyed_lock(lock_keys, namespace=namespace, enable_logging=False):
+        # Prepare graph database operations
+        graph_ops = []
+        entity_vdb_data = {}
+        
+        for entity_name, entity_data in entities:
+            reserved = {"entity_name", "entity_type"}
+            extra_props = {k: v for k, v in dict(entity_data).items() if k not in reserved}
+            entity_type = entity_data.get("entity_type", "UNKNOWN")
+            
+            base = {
+                "entity_id": entity_name,
+                "entity_type": entity_type,
+                "description": entity_data.get("description", ""),
+                "source_id": entity_data.get("source_id", "jsonl_import"),
+                "file_path": entity_data.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            }
+            merged = {**base, **extra_props}
+            merged.setdefault("created_at", now)
+            merged["updated_at"] = now
+            
+            # Queue graph database operation
+            graph_ops.append(chunk_entity_relation_graph.upsert_node(entity_name, merged))
+            
+            # Prepare vector database data
+            description = str(merged.get("description") or "")
+            content = entity_name + "\n" + description
+            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+            tagged_entity_id = _tagged_entity_vdb_id(entity_name, graph_tag=graph_tag)
+            
+            entity_vdb_data[entity_id] = {
+                "content": content,
+                "entity_name": entity_name,
+                "source_id": merged.get("source_id", ""),
+                "description": description,
+                "entity_type": merged.get("entity_type", "UNKNOWN"),
+                "file_path": merged.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            }
+            entity_vdb_data[tagged_entity_id] = {
+                **entity_vdb_data[entity_id],
+                "embedding_scope": "graph_tag",
+            }
+        
+        # Execute graph database operations concurrently
+        await asyncio.gather(*graph_ops)
+        
+        # Batch upsert to vector database (this will batch generate embeddings)
+        if entity_vdb_data:
+            await entities_vdb.upsert(entity_vdb_data)
+        
+        # Persist updates once for the entire batch
+        await _persist_graph_updates(
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+            chunk_entity_relation_graph=chunk_entity_relation_graph,
+            entity_chunks_storage=entity_chunks_storage,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+    
+    return len(entities)
+
+
+async def abatch_upsert_relations(
+    chunk_entity_relation_graph,
+    entities_vdb,
+    relationships_vdb,
+    relations: list[tuple[str, str, dict[str, Any]]],
+    *,
+    relation_chunks_storage=None,
+) -> int:
+    """
+    Batch upsert multiple relations efficiently.
+    
+    Args:
+        relations: List of (source_entity, target_entity, relation_data) tuples
+    Returns:
+        Number of relations processed
+    """
+    if not relations:
+        return 0
+    
+    graph_tag = _normalize_graph_tag(relations[0][2].get("graph_tag", "default"))
+    now = int(time.time())
+    
+    # Collect all entity names for locking and existence check
+    all_entities = set()
+    for src, tgt, _ in relations:
+        all_entities.add(src)
+        all_entities.add(tgt)
+    
+    workspace = relationships_vdb.global_config.get("workspace", "")
+    namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+    
+    # Use locks for all entities involved
+    lock_keys = [f"{name}@{graph_tag}" for name in all_entities]
+    async with get_storage_keyed_lock(lock_keys, namespace=namespace, enable_logging=False):
+        # Ensure all endpoint entities exist
+        entity_existence_checks = [
+            chunk_entity_relation_graph.has_node(ent, graph_tag=graph_tag)
+            for ent in all_entities
+        ]
+        existence_results = await asyncio.gather(*entity_existence_checks)
+        
+        # Create missing entities
+        create_ops = []
+        for ent, exists in zip(all_entities, existence_results):
+            if not exists:
+                create_ops.append(
+                    chunk_entity_relation_graph.upsert_node(
+                        ent,
+                        {
+                            "entity_id": ent,
+                            "entity_type": "UNKNOWN",
+                            "description": "UNKNOWN",
+                            "source_id": "jsonl_import",
+                            "file_path": "jsonl_import",
+                            "graph_tag": graph_tag,
+                            "created_at": int(time.time()),
+                        },
+                    )
+                )
+        if create_ops:
+            await asyncio.gather(*create_ops)
+        
+        # Batch check existing edges concurrently
+        edge_checks = [
+            chunk_entity_relation_graph.get_edge(src, tgt, graph_tag=graph_tag)
+            for src, tgt, _ in relations
+        ]
+        existing_edges = await asyncio.gather(*edge_checks)
+        
+        # Prepare graph and vector database operations
+        graph_ops = []
+        relation_vdb_data = {}
+        
+        for (source_entity, target_entity, relation_data), existing_edge in zip(relations, existing_edges):
+            extra_props = {k: v for k, v in dict(relation_data).items()}
+            base_edge = {
+                "description": relation_data.get("description", ""),
+                "keywords": relation_data.get("keywords", ""),
+                "source_id": relation_data.get("source_id", "jsonl_import"),
+                "weight": float(relation_data.get("weight", 1.0)),
+                "file_path": relation_data.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            }
+            merged_edge = {**(existing_edge or {}), **base_edge, **extra_props}
+            merged_edge.setdefault("created_at", now)
+            merged_edge["updated_at"] = now
+            
+            # Queue graph database operation
+            graph_ops.append(
+                chunk_entity_relation_graph.upsert_edge(
+                    source_entity, target_entity, merged_edge
+                )
+            )
+            
+            # Prepare vector database data
+            norm_src, norm_tgt = sorted([source_entity, target_entity])
+            description = str(merged_edge.get("description") or "")
+            keywords = str(merged_edge.get("keywords") or "")
+            source_id = str(merged_edge.get("source_id") or "")
+            weight = float(merged_edge.get("weight", 1.0))
+            content = f"{keywords}\t{norm_src}\n{norm_tgt}\n{description}"
+            
+            legacy_rel_id = compute_mdhash_id(norm_src + norm_tgt, prefix="rel-")
+            tagged_rel_id = _tagged_relation_vdb_id(norm_src, norm_tgt, graph_tag=graph_tag)
+            
+            relation_vdb_data[legacy_rel_id] = {
+                "content": content,
+                "src_id": norm_src,
+                "tgt_id": norm_tgt,
+                "source_id": source_id,
+                "description": description,
+                "keywords": keywords,
+                "weight": weight,
+                "file_path": merged_edge.get("file_path", "jsonl_import"),
+                "graph_tag": graph_tag,
+            }
+            relation_vdb_data[tagged_rel_id] = {
+                **relation_vdb_data[legacy_rel_id],
+                "embedding_scope": "graph_tag",
+            }
+        
+        # Execute graph database operations concurrently
+        await asyncio.gather(*graph_ops)
+        
+        # Batch upsert to vector database
+        if relation_vdb_data:
+            await relationships_vdb.upsert(relation_vdb_data)
+        
+        # Persist updates once for the entire batch
+        await _persist_graph_updates(
+            relationships_vdb=relationships_vdb,
+            chunk_entity_relation_graph=chunk_entity_relation_graph,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+    
+    return len(relations)
+
+
 async def aupsert_relation(
     chunk_entity_relation_graph,
     entities_vdb,
@@ -1447,6 +1680,7 @@ async def aupsert_relation(
         merged_edge = {**(existing_edge or {}), **base_edge, **extra_props}
         merged_edge.setdefault("created_at", now)
         merged_edge["updated_at"] = now
+        logger.info(f" aupsert_relation(): merged_edge: {merged_edge}")
 
         await chunk_entity_relation_graph.upsert_edge(
             source_entity, target_entity, merged_edge

@@ -1116,6 +1116,68 @@ class Neo4JStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error during edge upsert: {str(e)}")
             raise
+    
+    async def get_knowledge_graph_simple_version(self, label: str, max_depth: int = 3, max_nodes: int = None, graph_tags: list[str] | None = None) -> KnowledgeGraph:
+        """
+        Get knowledge graph in a simple version, only return the nodes and edges that are directly connected to the label.
+        Args:
+            label: Label of the starting node
+            max_depth: Maximum depth of the subgraph
+            max_nodes: Maximum number of nodes to return
+            graph_tags: List of graph tags to filter nodes/edges
+        Returns:
+            KnowledgeGraph object containing nodes and edges
+        """
+        workspace_label = self._get_workspace_label()
+        result = KnowledgeGraph()
+        seen_nodes = set()
+        seen_edges = set()
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            if label == "*":
+                if has_graph_tag_filter:
+                    query = f"""
+                    UNWIND $graph_tags AS graph_tag
+                    MATCH (n {{graph_tag: graph_tag}})
+                    RETURN n
+                    """
+                else:
+                    query = f"""
+                    MATCH (n:`base`)
+                    RETURN n
+                    """
+            else:
+                if has_graph_tag_filter:
+                    query = f"""
+                    MATCH (n {{graph_tag: graph_tag}})
+                    WHERE n.entity_id = $label
+                    RETURN n
+                    """
+                else:
+                    query = f"""
+                    MATCH (n:`base`)
+                    WHERE n.entity_id = $label
+                    RETURN n
+                    """
+                params = {
+                    "label": label,
+                    "graph_tags": graph_tags,
+                }
+            result_set = None
+            try:
+                if has_graph_tag_filter:
+                    result_set = await session.run(query, **params)
+                else:
+                    result_set = await session.run(query, **params)
+                record = await result_set.single()
+            finally:
+                if result_set:
+                    await result_set.consume()
+            return record
+
 
     async def get_knowledge_graph(
         self,
@@ -1265,189 +1327,14 @@ class Neo4JStorage(BaseGraphStorage):
                             await result_set.consume()
 
                 else:
-                    # Entity-centered query. If graph_tags are provided, graph_tag is treated as multi-valued
-                    # (split by GRAPH_FIELD_SEP) and we match if ANY selected tag is present.
-                    if has_graph_tag_filter:
-                        full_query = f"""
-                        MATCH (start  )
-                        WHERE start.entity_id = $entity_id
-                        WITH start,
-                             CASE
-                                 WHEN start.graph_tag IS NULL THEN ['default']
-                                 WHEN size(start.graph_tag) IS NOT NULL
-                                     THEN CASE WHEN size(start.graph_tag) = 0 THEN ['default'] ELSE start.graph_tag END
-                                 ELSE CASE
-                                     WHEN toString(start.graph_tag) = '' THEN ['default']
-                                     ELSE split(toString(start.graph_tag), $sep)
-                                 END
-                             END AS stags
-                        WHERE any(t IN $graph_tags WHERE t IN stags)
-                        OPTIONAL MATCH (start)-[r]-()
-                        WITH start, count(r) AS degree
-                        ORDER BY degree DESC
-                        LIMIT 1
-                        WITH start
-                        CALL apoc.path.subgraphAll(start, {{
-                            relationshipFilter: '',
-                            labelFilter: '{workspace_label}',
-                            minLevel: 0,
-                            maxLevel: $max_depth,
-                            bfs: true
-                        }})
-                        YIELD nodes, relationships
-                        WITH nodes, relationships, size(nodes) AS total_nodes
-                        UNWIND nodes AS node
-                        WITH node, relationships, total_nodes,
-                             CASE
-                                 WHEN node.graph_tag IS NULL THEN ['default']
-                                 WHEN size(node.graph_tag) IS NOT NULL
-                                     THEN CASE WHEN size(node.graph_tag) = 0 THEN ['default'] ELSE node.graph_tag END
-                                 ELSE CASE
-                                     WHEN toString(node.graph_tag) = '' THEN ['default']
-                                     ELSE split(toString(node.graph_tag), $sep)
-                                 END
-                             END AS ntags
-                        WHERE any(t IN $graph_tags WHERE t IN ntags)
-                        WITH collect({{node: node}}) AS node_info, relationships, total_nodes
-                        RETURN node_info, relationships, total_nodes
-                        """
-                    else:
-                        # No graph_tag filter: choose a single best-matching start node (across all tags) by degree.
-                        full_query = f"""
-                        MATCH (start  )
-                        WHERE start.entity_id = $entity_id
-                        OPTIONAL MATCH (start)-[r]-()
-                        WITH start, count(r) AS degree
-                        ORDER BY degree DESC
-                        LIMIT 1
-                        WITH start
-                        CALL apoc.path.subgraphAll(start, {{
-                            relationshipFilter: '',
-                            labelFilter: '{workspace_label}',
-                            minLevel: 0,
-                            maxLevel: $max_depth,
-                            bfs: true
-                        }})
-                        YIELD nodes, relationships
-                        WITH nodes, relationships, size(nodes) AS total_nodes
-                        UNWIND nodes AS node
-                        WITH collect({{node: node}}) AS node_info, relationships, total_nodes
-                        RETURN node_info, relationships, total_nodes
-                        """
-
-                    # Try to get full result
-                    full_result = None
-                    try:
-                        params: dict[str, object] = {
-                            "entity_id": node_label,
-                            "max_depth": max_depth,
-                        }
-                        if has_graph_tag_filter:
-                            params["graph_tags"] = graph_tags
-                            params["sep"] = GRAPH_FIELD_SEP
-                        full_result = await session.run(full_query, params)
-                        full_record = await full_result.single()
-
-                        # If no record found, return empty KnowledgeGraph
-                        if not full_record:
-                            logger.debug(
-                                f"[{self.workspace}] No nodes found for entity_id: {node_label}"
-                            )
-                            return result
-
-                        # If record found, check node count
-                        total_nodes = full_record["total_nodes"]
-
-                        if total_nodes <= max_nodes:
-                            # If node count is within limit, use full result directly
-                            logger.debug(
-                                f"[{self.workspace}] Using full result with {total_nodes} nodes (no truncation needed)"
-                            )
-                            record = full_record
-                        else:
-                            # If node count exceeds limit, set truncated flag and run limited query
-                            result.is_truncated = True
-                            logger.info(
-                                f"[{self.workspace}] Graph truncated: {total_nodes} nodes found, breadth-first search limited to {max_nodes}"
-                            )
-
-                            # Run limited query
-                            if has_graph_tag_filter:
-                                limited_query = f"""
-                                MATCH (start  )
-                                WHERE start.entity_id = $entity_id
-                                WITH start,
-                                     CASE
-                                         WHEN start.graph_tag IS NULL OR toString(start.graph_tag) = '' THEN ['default']
-                                         ELSE split(toString(start.graph_tag), $sep)
-                                     END AS stags
-                                WHERE any(t IN $graph_tags WHERE t IN stags)
-                                OPTIONAL MATCH (start)-[r]-()
-                                WITH start, count(r) AS degree
-                                ORDER BY degree DESC
-                                LIMIT 1
-                                WITH start
-                                CALL apoc.path.subgraphAll(start, {{
-                                    relationshipFilter: '',
-                                    labelFilter: '{workspace_label}',
-                                    minLevel: 0,
-                                    maxLevel: $max_depth,
-                                    limit: $max_nodes,
-                                    bfs: true
-                                }})
-                                YIELD nodes, relationships
-                                UNWIND nodes AS node
-                                WITH node, relationships,
-                                     CASE
-                                         WHEN node.graph_tag IS NULL OR toString(node.graph_tag) = '' THEN ['default']
-                                         ELSE split(toString(node.graph_tag), $sep)
-                                     END AS ntags
-                                WHERE any(t IN $graph_tags WHERE t IN ntags)
-                                WITH collect({{node: node}}) AS node_info, relationships
-                                RETURN node_info, relationships
-                                """
-                            else:
-                                limited_query = f"""
-                                MATCH (start  )
-                                WHERE start.entity_id = $entity_id
-                                OPTIONAL MATCH (start)-[r]-()
-                                WITH start, count(r) AS degree
-                                ORDER BY degree DESC
-                                LIMIT 1
-                                WITH start
-                                CALL apoc.path.subgraphAll(start, {{
-                                    relationshipFilter: '',
-                                    labelFilter: '{workspace_label}',
-                                    minLevel: 0,
-                                    maxLevel: $max_depth,
-                                    limit: $max_nodes,
-                                    bfs: true
-                                }})
-                                YIELD nodes, relationships
-                                UNWIND nodes AS node
-                                WITH collect({{node: node}}) AS node_info, relationships
-                                RETURN node_info, relationships
-                                """
-                            result_set = None
-                            try:
-                                limited_params: dict[str, object] = {
-                                    "entity_id": node_label,
-                                    "max_depth": max_depth,
-                                    "max_nodes": max_nodes,
-                                }
-                                if has_graph_tag_filter:
-                                    limited_params["graph_tags"] = graph_tags
-                                    limited_params["sep"] = GRAPH_FIELD_SEP
-                                result_set = await session.run(limited_query, limited_params)
-                                record = await result_set.single()
-                            finally:
-                                if result_set:
-                                    await result_set.consume()
-                    finally:
-                        if full_result:
-                            await full_result.consume()
+                    # Entity-centered query: use fallback method that doesn't require APOC
+                    logger.info(
+                        f"[{self.workspace}] Using basic Cypher recursive search (no APOC) for entity_id: {node_label}"
+                    )
+                    return await self._robust_fallback(node_label, max_depth, max_nodes, graph_tags)
 
                 if record:
+                    logger.info(f" get knowledge graph from {self.workspace} success, record: {len(record)}")
                     # Handle nodes (compatible with multi-label cases)
                     for node_info in record["node_info"]:
                         node = node_info["node"]
@@ -1483,23 +1370,6 @@ class Neo4JStorage(BaseGraphStorage):
                         f"[{self.workspace}] Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
                     )
 
-            except neo4jExceptions.ClientError as e:
-                error_code = getattr(e, 'code', '')
-                if 'ProcedureNotFound' in str(e) or 'apoc' in str(e).lower():
-                    logger.warning(f"[{self.workspace}] APOC plugin not available: {str(e)}")
-                    if node_label != "*":
-                        logger.warning(
-                            f"[{self.workspace}] Neo4j: falling back to basic Cypher recursive search..."
-                        )
-                        return await self._robust_fallback(node_label, max_depth, max_nodes, graph_tags)
-                    else:
-                        logger.warning(
-                            f"[{self.workspace}] Neo4j: APOC plugin error with wildcard query, returning empty result"
-                        )
-                        return result
-                else:
-                    logger.error(f"[{self.workspace}] Error in get_knowledge_graph: {e}")
-                    raise
             except Exception as e:
                 logger.error(f"[{self.workspace}] Error in get_knowledge_graph: {e}")
                 raise
@@ -1514,6 +1384,8 @@ class Neo4JStorage(BaseGraphStorage):
         This method implements the same functionality as get_knowledge_graph but uses
         only basic Cypher queries and true breadth-first traversal instead of APOC procedures.
         
+        Optimized version that batches queries by level to reduce database round trips.
+        
         Args:
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph
@@ -1522,231 +1394,333 @@ class Neo4JStorage(BaseGraphStorage):
                 - None / [] means no filtering
                 - Otherwise, only nodes with matching graph_tag are considered.
         """
-        from collections import deque
+        logger.info(
+            f"[{self.workspace}] Starting _robust_fallback for entity_id: {node_label}, max_depth: {max_depth}, max_nodes: {max_nodes}"
+        )
+        
+        try:
+            # Normalize graph_tags (treat None / [] as "no filtering")
+            graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+            has_graph_tag_filter = len(graph_tags) > 0
 
-        # Normalize graph_tags (treat None / [] as "no filtering")
-        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
-        has_graph_tag_filter = len(graph_tags) > 0
+            result = KnowledgeGraph()
+            visited_nodes = set()
+            visited_edges = set()
+            visited_edge_pairs = set()
 
-        result = KnowledgeGraph()
-        visited_nodes = set()
-        visited_edges = set()
-        visited_edge_pairs = set()
-
-        # Build graph_tag filter condition.
-        # IMPORTANT: This fallback path is used when APOC is unavailable, so do NOT rely on any apoc.* procedures.
-        if has_graph_tag_filter:
-            graph_tag_filter = """
-            WITH n,
-                 CASE
-                     WHEN n.graph_tag IS NULL OR toString(n.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(n.graph_tag), $sep)
-                 END AS ntags
-            WHERE any(t IN $graph_tags WHERE t IN ntags)
-            """
-            graph_tag_filter_rel = """
-            WITH r, b, edge_id, target_id,
-                 CASE
-                     WHEN b.graph_tag IS NULL OR toString(b.graph_tag) = '' THEN ['default']
-                     ELSE split(toString(b.graph_tag), $sep)
-                 END AS btags
-            WHERE any(t IN $graph_tags WHERE t IN btags)
-            WITH r, b, edge_id, target_id
-            """
-        else:
-            graph_tag_filter = ""
-            graph_tag_filter_rel = ""
-
-        # Get the starting node's data
-        workspace_label = self._get_workspace_label()
-        async with self._driver.session(
-            database=self._DATABASE, default_access_mode="READ"
-        ) as session:
-            # If multiple nodes share the same entity_id, pick a deterministic start node by degree.
+            # Build graph_tag filter condition.
+            # IMPORTANT: This fallback path is used when APOC is unavailable, so do NOT rely on any apoc.* procedures.
             if has_graph_tag_filter:
-                query = f"""
-                MATCH (n:`base`   {{entity_id: $entity_id}})
-                {graph_tag_filter}
-                OPTIONAL MATCH (n:`base`)-[r]-()
-                WITH n, count(r) AS degree
-                ORDER BY degree DESC
-                LIMIT 1
-                RETURN id(n) as node_id, n
+                # 简化graph_tag处理逻辑，移除注释
+                graph_tag_filter_with = """
+                WITH n, 
+                     CASE
+                         WHEN n.graph_tag IS NULL THEN ['default']
+                         WHEN toString(n.graph_tag) = '' THEN ['default']
+                         WHEN toString(n.graph_tag) CONTAINS $sep THEN split(toString(n.graph_tag), $sep)
+                         ELSE [toString(n.graph_tag)]
+                     END AS ntags
+                WHERE any(t IN $graph_tags WHERE t IN ntags)
                 """
-                node_result = await session.run(
-                    query,
-                    entity_id=node_label,
-                    graph_tags=graph_tags,
-                    sep=GRAPH_FIELD_SEP,
-                )
+                graph_tag_filter_rel = """
+                WITH r, b, edge_id, target_id, source_id,
+                     CASE
+                         WHEN b.graph_tag IS NULL THEN ['default']
+                         WHEN toString(b.graph_tag) = '' THEN ['default']
+                         WHEN toString(b.graph_tag) CONTAINS $sep THEN split(toString(b.graph_tag), $sep)
+                         ELSE [toString(b.graph_tag)]
+                     END AS btags
+                WHERE any(t IN $graph_tags WHERE t IN btags)
+                WITH r, b, edge_id, target_id, source_id
+                """
             else:
-                query = f"""
-                MATCH (n:`base`   {{entity_id: $entity_id}})
-                OPTIONAL MATCH (n:`base`)-[r]-()
-                WITH n, count(r) AS degree
-                ORDER BY degree DESC
-                LIMIT 1
-                RETURN id(n) as node_id, n
-                """
-                node_result = await session.run(query, entity_id=node_label)
-            try:
-                node_record = await node_result.single()
-                if not node_record:
-                    return result
+                graph_tag_filter_with = ""
+                graph_tag_filter_rel = ""
 
-                # Create initial KnowledgeGraphNode
-                # Use Neo4j internal node id as stable unique id (align with APOC path output).
-                start_node = KnowledgeGraphNode(
-                    id=str(node_record["node_id"]),
-                    labels=[node_record["n"].get("entity_id")],
-                    properties=dict(node_record["n"]._properties),
-                )
-            finally:
-                await node_result.consume()  # Ensure results are consumed
-
-        # Initialize queue for BFS with (node, edge, depth) tuples
-        # edge is None for the starting node
-        queue = deque([(start_node, None, 0)])
-
-        # True BFS implementation using a queue
-        while queue and len(visited_nodes) < max_nodes:
-            # Dequeue the next node to process
-            current_node, current_edge, current_depth = queue.popleft()
-
-            # Skip if already visited or exceeds max depth
-            if current_node.id in visited_nodes:
-                continue
-
-            if current_depth > max_depth:
-                logger.debug(
-                    f"[{self.workspace}] Skipping node at depth {current_depth} (max_depth: {max_depth})"
-                )
-                continue
-
-            # Add current node to result
-            result.nodes.append(current_node)
-            visited_nodes.add(current_node.id)
-
-            # Add edge to result if it exists and not already added
-            if current_edge and current_edge.id not in visited_edges:
-                result.edges.append(current_edge)
-                visited_edges.add(current_edge.id)
-
-            # Stop if we've reached the node limit
-            if len(visited_nodes) >= max_nodes:
-                result.is_truncated = True
-                logger.info(
-                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
-                )
-                break
-
-            # Get all edges and target nodes for the current node (even at max_depth)
+            workspace_label = self._get_workspace_label()
+            
+            # Reuse a single session for all queries to reduce overhead
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                workspace_label = self._get_workspace_label()
-                query = f"""
-                MATCH (a  )
-                WHERE id(a) = $node_id
-                MATCH (a)-[r]-(b  )
-                WITH r, b, id(r) as edge_id, id(b) as target_id
-                {graph_tag_filter_rel if has_graph_tag_filter else ""}
-                RETURN r, b, edge_id, target_id
-                """
-                if has_graph_tag_filter:
-                    results = await session.run(
-                        query,
-                        node_id=int(current_node.id),
-                        graph_tags=graph_tags,
-                        sep=GRAPH_FIELD_SEP,
-                    )
-                else:
-                    results = await session.run(query, node_id=int(current_node.id))
-
-                # Get all records and release database connection
-                records = await results.fetch(1000)  # Max neighbor nodes we can handle
-                await results.consume()  # Ensure results are consumed
-
-                # Process all neighbors - capture all edges but only queue unvisited nodes
-                for record in records:
-                    rel = record["r"]
-                    edge_id = str(record["edge_id"])
-
-                    if edge_id not in visited_edges:
-                        b_node = record["b"]
-                        target_id = b_node.get("entity_id")
-                        target_node_id = str(record["target_id"])
-
-                        if target_id:  # Only process if target node has entity_id
-                            # Create KnowledgeGraphNode for target
-                            target_node = KnowledgeGraphNode(
-                                id=target_node_id,
-                                labels=[target_id],
-                                properties=dict(b_node._properties),
-                            )
-
-                            # Create KnowledgeGraphEdge
-                            target_edge = KnowledgeGraphEdge(
-                                id=f"{edge_id}",
-                                type=rel.type,
-                                source=str(current_node.id),
-                                target=target_node_id,
-                                properties=dict(rel),
-                            )
-
-                            # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
-                            sorted_pair = tuple(sorted([str(current_node.id), target_node_id]))
-
-                            # Check if the same edge already exists (considering undirectedness)
-                            if sorted_pair not in visited_edge_pairs:
-                                # Only add edges whose endpoints will be included in `result.nodes`.
-                                #
-                                # IMPORTANT:
-                                # - `visited_nodes` contains Neo4j internal node ids (strings).
-                                # - When we are at the node limit, we must NOT add edges to nodes we won't include,
-                                #   otherwise the frontend will reject the graph as invalid.
-                                will_include_target = (
-                                    target_node_id in visited_nodes
-                                    or (
-                                        target_node_id not in visited_nodes
-                                        and current_depth < max_depth
-                                        and (len(visited_nodes) + len(queue) < max_nodes)
-                                    )
-                                )
-                                if will_include_target:
-                                    result.edges.append(target_edge)
-                                    visited_edges.add(edge_id)
-                                    visited_edge_pairs.add(sorted_pair)
-
-                            # Only add unvisited nodes to the queue for further expansion
-                            if target_node_id not in visited_nodes:
-                                # Only add to queue if we're not at max depth yet
-                                if current_depth < max_depth:
-                                    # Respect max_nodes budget (visited + queued must not exceed max_nodes)
-                                    if len(visited_nodes) + len(queue) < max_nodes:
-                                        # Add node to queue with incremented depth
-                                        # Edge is already added to result, so we pass None as edge
-                                        queue.append((target_node, None, current_depth + 1))
-                                else:
-                                    # At max depth, we've already added the edge but we don't add the node
-                                    # This prevents adding nodes beyond max_depth to the result
-                                    logger.debug(
-                                        f"[{self.workspace}] Node {target_id} beyond max depth {max_depth}, edge added but node not included"
-                                    )
+                # Get the starting node's data
+                node_result = None
+                start_node = None
+                try:
+                    # 简化节点查找逻辑
+                    workspace_label = self._get_workspace_label()
+                    
+                    # 尝试多种标签组合
+                    check_queries = [
+                        f"MATCH (n:`base` {{entity_id: $entity_id}}) RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels LIMIT 1",
+                        f"MATCH (n:`{workspace_label}` {{entity_id: $entity_id}}) RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels LIMIT 1",
+                        f"MATCH (n {{entity_id: $entity_id}}) RETURN id(n) as node_id, n.graph_tag as graph_tag, n.entity_id as entity_id, labels(n) as labels LIMIT 1"
+                    ]
+                    
+                    found_record = None
+                    effective_label = "base"
+                    
+                    for query in check_queries:
+                        check_result = await session.run(query, entity_id=node_label)
+                        check_record = await check_result.single()
+                        await check_result.consume()
+                        
+                        if check_record:
+                            found_record = check_record
+                            # 根据查询确定标签
+                            if "base" in query:
+                                effective_label = "base"
+                            elif workspace_label in query:
+                                effective_label = workspace_label
                             else:
-                                # If target node already exists in result, we don't need to add it again
-                                logger.debug(
-                                    f"[{self.workspace}] Node {target_id} already visited, edge added but node not queued"
-                                )
-                        else:
-                            logger.warning(
-                                f"[{self.workspace}] Skipping edge {edge_id} due to missing entity_id on target node"
-                            )
+                                # 无标签约束，使用节点实际的第一个标签
+                                labels = check_record.get('labels', [])
+                                effective_label = labels[0] if labels else "base"
+                            break
+                    
+                    if not found_record:
+                        logger.warning(
+                            f"[{self.workspace}] No node found with entity_id: {node_label}"
+                        )
+                        return result
+                    
+                    logger.info(
+                        f"[{self.workspace}] Found node with entity_id '{node_label}', using label: {effective_label}"
+                    )
+                    
+                    # 构建查询语句 - 不使用f-string避免语法问题
+                    if has_graph_tag_filter:
+                        query = f"""
+                        MATCH (n:`{effective_label}` {{entity_id: $entity_id}})
+                        {graph_tag_filter_with}
+                        OPTIONAL MATCH (n:`{effective_label}`)-[r]-()
+                        WITH n, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        RETURN id(n) as node_id, n
+                        """
+                        logger.info(
+                            f"[{self.workspace}] Executing query with graph_tag filter"
+                        )
+                        # 打印调试信息
+                        logger.debug(f"Query: {query}")
+                        logger.debug(f"Parameters: entity_id={node_label}, graph_tags={graph_tags}, sep={GRAPH_FIELD_SEP}")
+                        
+                        node_result = await session.run(
+                            query,
+                            entity_id=node_label,
+                            graph_tags=graph_tags,
+                            sep=GRAPH_FIELD_SEP,
+                        )
+                    else:
+                        query = f"""
+                        MATCH (n:`{effective_label}` {{entity_id: $entity_id}})
+                        OPTIONAL MATCH (n:`{effective_label}`)-[r]-()
+                        WITH n, count(r) AS degree
+                        ORDER BY degree DESC
+                        LIMIT 1
+                        RETURN id(n) as node_id, n
+                        """
+                        logger.info(
+                            f"[{self.workspace}] Executing query without graph_tag filter"
+                        )
+                        node_result = await session.run(query, entity_id=node_label)
+                    
+                    node_record = await node_result.single()
+                    if not node_record:
+                        logger.warning(
+                            f"[{self.workspace}] No node found after applying filters"
+                        )
+                        return result
 
-        logger.info(
-            f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
-        )
-        return result
+                    # Create initial KnowledgeGraphNode
+                    start_node = KnowledgeGraphNode(
+                        id=str(node_record["node_id"]),
+                        labels=[node_record["n"].get("entity_id")],
+                        properties=dict(node_record["n"]._properties),
+                    )
+                    logger.info(
+                        f"[{self.workspace}] Found start node: id={start_node.id}"
+                    )
+                except Exception as query_error:
+                    logger.error(
+                        f"[{self.workspace}] Error executing start node query: {query_error}"
+                    )
+                    # 打印完整的查询语句和参数用于调试
+                    if has_graph_tag_filter:
+                        logger.error(f"Failed query with parameters: entity_id={node_label}, graph_tags={graph_tags}")
+                    if node_result:
+                        try:
+                            await node_result.consume()
+                        except:
+                            pass
+                    raise
+                finally:
+                    if node_result:
+                        await node_result.consume()
+
+                # Process nodes level by level for batch querying
+                if start_node is None:
+                    logger.error(
+                        f"[{self.workspace}] start_node is None after query"
+                    )
+                    return result
+                
+                current_level = 0
+                nodes_at_current_level = [(start_node, 0)]
+
+                while nodes_at_current_level and len(visited_nodes) < max_nodes:
+                    # Process all nodes at the current level
+                    nodes_to_process = []
+                    for node, depth in nodes_at_current_level:
+                        if node.id in visited_nodes or depth > max_depth:
+                            continue
+                        
+                        if len(visited_nodes) >= max_nodes:
+                            result.is_truncated = True
+                            break
+                        
+                        # Add current node to result
+                        result.nodes.append(node)
+                        visited_nodes.add(node.id)
+                        nodes_to_process.append((node, depth))
+                    
+                    if len(visited_nodes) >= max_nodes:
+                        result.is_truncated = True
+                        logger.info(
+                            f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
+                        )
+                        break
+
+                    if not nodes_to_process:
+                        break
+
+                    # Batch query: get all neighbors for all nodes at current level in one query
+                    node_ids = [int(node.id) for node, depth in nodes_to_process if depth < max_depth]
+                    
+                    if node_ids:
+                        # Build batch query using UNWIND
+                        if has_graph_tag_filter:
+                            batch_query = f"""
+                            UNWIND $node_ids AS node_id
+                            MATCH (a)
+                            WHERE id(a) = node_id
+                            MATCH (a)-[r]-(b)
+                            WITH a, r, b, id(a) as source_id, id(r) as edge_id, id(b) as target_id,
+                                 CASE
+                                     WHEN b.graph_tag IS NULL THEN ['default']
+                                     WHEN toString(b.graph_tag) = '' THEN ['default']
+                                     WHEN toString(b.graph_tag) CONTAINS $sep THEN split(toString(b.graph_tag), $sep)
+                                     ELSE [toString(b.graph_tag)]
+                                 END AS btags
+                            WHERE any(t IN $graph_tags WHERE t IN btags)
+                            RETURN source_id, r, b, edge_id, target_id
+                            """
+                            batch_result = await session.run(
+                                batch_query,
+                                node_ids=node_ids,
+                                graph_tags=graph_tags,
+                                sep=GRAPH_FIELD_SEP,
+                            )
+                        else:
+                            batch_query = """
+                            UNWIND $node_ids AS node_id
+                            MATCH (a)
+                            WHERE id(a) = node_id
+                            MATCH (a)-[r]-(b)
+                            RETURN id(a) as source_id, r, b, id(r) as edge_id, id(b) as target_id
+                            """
+                            batch_result = await session.run(
+                                batch_query,
+                                node_ids=node_ids,
+                            )
+                        
+                        try:
+                            # Process all records from batch query
+                            records = await batch_result.fetch(10000)
+                            
+                            # Group neighbors by source node
+                            neighbors_by_source = {}
+                            for record in records:
+                                source_id = str(record["source_id"])
+                                if source_id not in neighbors_by_source:
+                                    neighbors_by_source[source_id] = []
+                                neighbors_by_source[source_id].append(record)
+                            
+                            # Process neighbors for each source node
+                            next_level_nodes = []
+                            for node, depth in nodes_to_process:
+                                if depth >= max_depth:
+                                    continue
+                                
+                                source_id = node.id
+                                neighbors = neighbors_by_source.get(source_id, [])
+                                
+                                for record in neighbors:
+                                    rel = record["r"]
+                                    edge_id = str(record["edge_id"])
+                                    b_node = record["b"]
+                                    target_id = b_node.get("entity_id")
+                                    target_node_id = str(record["target_id"])
+
+                                    if not target_id:
+                                        continue
+
+                                    if edge_id in visited_edges:
+                                        continue
+
+                                    target_node = KnowledgeGraphNode(
+                                        id=target_node_id,
+                                        labels=[target_id],
+                                        properties=dict(b_node._properties),
+                                    )
+
+                                    target_edge = KnowledgeGraphEdge(
+                                        id=edge_id,
+                                        type=rel.type,
+                                        source=source_id,
+                                        target=target_node_id,
+                                        properties=dict(rel),
+                                    )
+
+                                    sorted_pair = tuple(sorted([source_id, target_node_id]))
+
+                                    if sorted_pair not in visited_edge_pairs:
+                                        will_include_target = (
+                                            target_node_id in visited_nodes
+                                            or (
+                                                target_node_id not in visited_nodes
+                                                and depth < max_depth
+                                                and (len(visited_nodes) + len(next_level_nodes) < max_nodes)
+                                            )
+                                        )
+                                        if will_include_target:
+                                            result.edges.append(target_edge)
+                                            visited_edges.add(edge_id)
+                                            visited_edge_pairs.add(sorted_pair)
+
+                                    if target_node_id not in visited_nodes:
+                                        if depth < max_depth and len(visited_nodes) + len(next_level_nodes) < max_nodes:
+                                            next_level_nodes.append((target_node, depth + 1))
+                        
+                        finally:
+                            await batch_result.consume()
+                    
+                    # Move to next level
+                    current_level += 1
+                    nodes_at_current_level = next_level_nodes if current_level <= max_depth else []
+
+                logger.info(
+                    f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+                )
+                return result
+            
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error in _robust_fallback: {e}",
+                exc_info=True
+            )
+            raise
 
     async def get_all_labels(self, graph_tags: list[str] | None = None) -> list[str]:
         """
@@ -2021,6 +1995,37 @@ class Neo4JStorage(BaseGraphStorage):
                 edges.append(edge_properties)
             await result.consume()
             return edges
+
+    async def get_normal_labels(self, limit: int = 300, graph_tags: list[str] | None = None) -> list[str]:
+        """Get normal labels by node degree (most connected entities)
+        Args:
+            limit: Maximum number of labels to return
+            graph_tags: List of graph tags to filter labels by. If None, all labels will be returned.
+        Returns:
+            A list of all labels, where each label is a dictionary of its properties
+        """
+        workspace_label = self._get_workspace_label()
+        graph_tags = [t.strip() for t in (graph_tags or []) if isinstance(t, str) and t.strip()]
+        has_graph_tag_filter = len(graph_tags) > 0
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            query = """
+                    UNWIND $graph_tags AS graph_tag
+                    MATCH (n {graph_tag: graph_tag})
+                    WITH n, COUNT { (n)--() } AS degree
+                    WHERE degree > 1
+                    WITH n.entity_id AS label, degree
+                    ORDER BY degree DESC, label ASC
+                    LIMIT $limit
+                    RETURN label
+                """
+            result = await session.run(query, limit=limit, graph_tags=graph_tags)
+            labels = [record["label"] async for record in result]
+            await result.consume()
+            logger.info(f" get normal labels from {self.workspace} success, labels: {len(labels)}")
+            return labels
+    
 
     async def get_popular_labels(
         self, limit: int = 300, graph_tags: list[str] | None = None

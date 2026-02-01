@@ -290,6 +290,8 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     def _prepare_doc_status_data(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Normalize and migrate a raw Mongo document to DocProcessingStatus-compatible dict."""
+        from datetime import datetime, timezone
+        
         # Make a copy of the data to avoid modifying the original
         data = doc.copy()
         # Remove deprecated content field if it exists
@@ -299,11 +301,35 @@ class MongoDocStatusStorage(DocStatusStorage):
         # If file_path is not in data, use document id as file path
         if "file_path" not in data:
             data["file_path"] = "no-file-path"
-        # Ensure new fields exist with default values
+        # Ensure all required fields exist with defaults
+        if "content_summary" not in data:
+            data["content_summary"] = ""
+        if "content_length" not in data:
+            data["content_length"] = 0
+        if "created_at" not in data:
+            # Convert datetime to ISO string if needed, or use updated_at, or current time
+            if "updated_at" in data:
+                updated_at = data["updated_at"]
+                if isinstance(updated_at, datetime):
+                    data["created_at"] = updated_at.isoformat()
+                else:
+                    data["created_at"] = str(updated_at)
+            else:
+                data["created_at"] = datetime.now(timezone.utc).isoformat()
+        elif isinstance(data["created_at"], datetime):
+            data["created_at"] = data["created_at"].isoformat()
+        if "updated_at" not in data:
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        elif isinstance(data["updated_at"], datetime):
+            data["updated_at"] = data["updated_at"].isoformat()
+        if "status" not in data:
+            data["status"] = DocStatus.PENDING
         if "metadata" not in data:
             data["metadata"] = {}
         if "error_msg" not in data:
             data["error_msg"] = None
+        if "chunks_list" not in data:
+            data["chunks_list"] = []
         # Backward compatibility: migrate legacy 'error' field to 'error_msg'
         if "error" in data:
             if "error_msg" not in data or data["error_msg"] in (None, ""):

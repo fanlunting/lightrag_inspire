@@ -1586,9 +1586,12 @@ class LightRAG:
                         "created_at": status_doc.created_at,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "file_path": getattr(status_doc, "file_path", "unknown_source"),
-                        "track_id": getattr(status_doc, "track_id", ""),
+                        "track_id": getattr(status_doc, "track_id", None),
+                        "graph_tag": getattr(status_doc, "graph_tag", "default"),
+                        "chunks_count": getattr(status_doc, "chunks_count", None),
+                        "chunks_list": getattr(status_doc, "chunks_list", []),
                         # Clear any error messages and processing metadata
-                        "error_msg": "",
+                        "error_msg": None,
                         "metadata": {},
                     }
 

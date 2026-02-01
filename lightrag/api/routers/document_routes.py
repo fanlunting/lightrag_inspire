@@ -1128,6 +1128,82 @@ async def pipeline_enqueue_file(
                     from lightrag.utils_graph import aupsert_entity, aupsert_relation
                     import json
                     
+                    # Create document status record with PENDING status first
+                    # This allows frontend to track the processing status from the beginning
+                    doc_id = None
+                    try:
+                        current_time = datetime.now(timezone.utc).isoformat()
+                        doc_id = compute_mdhash_id(file_path.name, prefix="doc-")
+                        
+                        # Create initial PENDING status record
+                        jsonl_doc_pending = {
+                            doc_id: {
+                                "status": DocStatus.PENDING,
+                                "content_summary": f"JSONL file: {file_path.name}",
+                                "content_length": file_size,
+                                "file_path": file_path.name,
+                                "track_id": track_id,
+                                "graph_tag": graph_tag or "default",
+                                "chunks_count": None,
+                                "chunks_list": [],
+                                "created_at": current_time,
+                                "updated_at": current_time,
+                                "metadata": {
+                                    "file_type": "jsonl",
+                                    "source_id": "jsonl_import",
+                                },
+                            }
+                        }
+                        await rag.doc_status.upsert(jsonl_doc_pending)
+                        logger.debug(f"Created PENDING status record for JSONL file: {file_path.name}")
+                    except Exception as status_error:
+                        # Log error but continue processing
+                        logger.warning(
+                            f"Failed to create PENDING status record for JSONL file {file_path.name}: {status_error}"
+                        )
+                    
+                    # Update status to PROCESSING before starting actual processing
+                    if doc_id:
+                        try:
+                            current_time = datetime.now(timezone.utc).isoformat()
+                            # Get existing document data first to preserve all fields
+                            existing_doc = await rag.doc_status.get_by_id(doc_id)
+                            if existing_doc:
+                                # Merge with existing data to preserve all fields
+                                jsonl_doc_processing = {
+                                    doc_id: {
+                                        **existing_doc,
+                                        "status": DocStatus.PROCESSING,
+                                        "updated_at": current_time,
+                                    }
+                                }
+                            else:
+                                # If document doesn't exist (shouldn't happen), create a minimal record
+                                jsonl_doc_processing = {
+                                    doc_id: {
+                                        "status": DocStatus.PROCESSING,
+                                        "content_summary": f"JSONL file: {file_path.name}",
+                                        "content_length": file_size,
+                                        "file_path": file_path.name,
+                                        "track_id": track_id,
+                                        "graph_tag": graph_tag or "default",
+                                        "chunks_count": None,
+                                        "chunks_list": [],
+                                        "created_at": current_time,
+                                        "updated_at": current_time,
+                                        "metadata": {
+                                            "file_type": "jsonl",
+                                            "source_id": "jsonl_import",
+                                        },
+                                    }
+                                }
+                            await rag.doc_status.upsert(jsonl_doc_processing)
+                            logger.debug(f"Updated status to PROCESSING for JSONL file: {file_path.name}")
+                        except Exception as status_error:
+                            logger.warning(
+                                f"Failed to update status to PROCESSING for JSONL file {file_path.name}: {status_error}"
+                            )
+                    
                     try:
                         # Read and process JSONL file line by line
                         content_str = file.decode("utf-8", errors="replace")
@@ -1271,44 +1347,50 @@ async def pipeline_enqueue_file(
                                     "raw": line[:5000],
                                 })
                         
-                        # Phase 2: Batch upsert entities concurrently - wait for all to complete
+                        # Phase 2: Batch upsert entities concurrently with concurrency control
+                        # Use semaphore to limit concurrent operations and prevent connection pool exhaustion
                         if entities_to_upsert:
-                            BATCH_SIZE = 50  # Process entities in batches
-                            entity_items = list(entities_to_upsert.items())
+                            # Get concurrency limit from rag config (similar to merge_nodes_and_edges)
+                            # Use llm_model_max_async * 2 for graph operations (as per documentation)
+                            graph_max_async = getattr(rag, 'llm_model_max_async', 4) * 2
+                            entity_semaphore = asyncio.Semaphore(graph_max_async)
                             
-                            # Collect all entity tasks from all batches
-                            all_entity_tasks = []
-                            for i in range(0, len(entity_items), BATCH_SIZE):
-                                batch = entity_items[i:i + BATCH_SIZE]
-                                batch_tasks = [
-                                    aupsert_entity(
+                            async def _locked_upsert_entity(entity_name: str, entity_data: dict[str, Any]):
+                                async with entity_semaphore:
+                                    return await aupsert_entity(
                                         rag.chunk_entity_relation_graph,
                                         rag.entities_vdb,
                                         rag.relationships_vdb,
                                         entity_name,
                                         entity_data,
                                     )
-                                    for entity_name, entity_data in batch
-                                ]
-                                all_entity_tasks.extend(batch_tasks)
+                            
+                            entity_items = list(entities_to_upsert.items())
+                            # Process all entities with concurrency control
+                            entity_tasks = [
+                                _locked_upsert_entity(entity_name, entity_data)
+                                for entity_name, entity_data in entity_items
+                            ]
                             
                             # Wait for all entity upserts to complete before proceeding
-                            if all_entity_tasks:
-                                all_entity_results = await asyncio.gather(*all_entity_tasks, return_exceptions=True)
+                            if entity_tasks:
+                                all_entity_results = await asyncio.gather(*entity_tasks, return_exceptions=True)
                                 
                                 # Count successful upserts
                                 for result in all_entity_results:
                                     if not isinstance(result, Exception):
                                         entities_created_or_updated += 1
                         
-                        # Phase 3: Batch upsert relations concurrently - only after all entities are done
+                        # Phase 3: Batch upsert relations concurrently with concurrency control
+                        # Only after all entities are done
                         if relations_to_upsert:
-                            BATCH_SIZE = 50  # Process relations in batches
+                            # Use same concurrency limit for relations
+                            graph_max_async = getattr(rag, 'llm_model_max_async', 4) * 2
+                            relation_semaphore = asyncio.Semaphore(graph_max_async)
                             
-                            for i in range(0, len(relations_to_upsert), BATCH_SIZE):
-                                batch = relations_to_upsert[i:i + BATCH_SIZE]
-                                tasks = [
-                                    aupsert_relation(
+                            async def _locked_upsert_relation(h_name: str, t_name: str, rel_data: dict[str, Any]):
+                                async with relation_semaphore:
+                                    return await aupsert_relation(
                                         rag.chunk_entity_relation_graph,
                                         rag.entities_vdb,
                                         rag.relationships_vdb,
@@ -1316,9 +1398,15 @@ async def pipeline_enqueue_file(
                                         t_name,
                                         rel_data,
                                     )
-                                    for h_name, t_name, rel_data in batch
-                                ]
-                                results = await asyncio.gather(*tasks, return_exceptions=True)
+                            
+                            # Process all relations with concurrency control
+                            relation_tasks = [
+                                _locked_upsert_relation(h_name, t_name, rel_data)
+                                for h_name, t_name, rel_data in relations_to_upsert
+                            ]
+                            
+                            if relation_tasks:
+                                results = await asyncio.gather(*relation_tasks, return_exceptions=True)
                                 
                                 # Count successful upserts
                                 for result in results:
@@ -1341,6 +1429,69 @@ async def pipeline_enqueue_file(
                                 f"{relations_created_or_updated} relations"
                             )
                         
+                        # Update document status record to PROCESSED
+                        # The record was already created with PENDING status, then updated to PROCESSING
+                        if doc_id:
+                            try:
+                                current_time = datetime.now(timezone.utc).isoformat()
+                                content_summary = f"JSONL import: {lines_ok} lines, {entities_created_or_updated} entities, {relations_created_or_updated} relations"
+                                if errors:
+                                    content_summary += f", {len(errors)} errors"
+                                
+                                # Get existing document data first to preserve all fields
+                                existing_doc = await rag.doc_status.get_by_id(doc_id)
+                                if existing_doc:
+                                    # Merge with existing data to preserve all fields
+                                    existing_metadata = existing_doc.get("metadata", {})
+                                    existing_metadata.update({
+                                        "file_type": "jsonl",
+                                        "lines_processed": lines_ok,
+                                        "entities_count": entities_created_or_updated,
+                                        "relations_count": relations_created_or_updated,
+                                        "errors_count": len(errors),
+                                        "source_id": "jsonl_import",
+                                    })
+                                    jsonl_doc_processed = {
+                                        doc_id: {
+                                            **existing_doc,
+                                            "status": DocStatus.PROCESSED,
+                                            "content_summary": content_summary,
+                                            "updated_at": current_time,
+                                            "metadata": existing_metadata,
+                                        }
+                                    }
+                                else:
+                                    # If document doesn't exist (shouldn't happen), create a complete record
+                                    jsonl_doc_processed = {
+                                        doc_id: {
+                                            "status": DocStatus.PROCESSED,
+                                            "content_summary": content_summary,
+                                            "content_length": file_size,
+                                            "file_path": file_path.name,
+                                            "track_id": track_id,
+                                            "graph_tag": graph_tag or "default",
+                                            "chunks_count": 0,
+                                            "chunks_list": [],
+                                            "created_at": current_time,
+                                            "updated_at": current_time,
+                                            "metadata": {
+                                                "file_type": "jsonl",
+                                                "lines_processed": lines_ok,
+                                                "entities_count": entities_created_or_updated,
+                                                "relations_count": relations_created_or_updated,
+                                                "errors_count": len(errors),
+                                                "source_id": "jsonl_import",
+                                            },
+                                        }
+                                    }
+                                await rag.doc_status.upsert(jsonl_doc_processed)
+                                logger.debug(f"Updated status to PROCESSED for JSONL file: {file_path.name}")
+                            except Exception as status_error:
+                                # Log error but don't fail the import
+                                logger.warning(
+                                    f"Failed to update status to PROCESSED for JSONL file {file_path.name}: {status_error}"
+                                )
+                        
                         # Move file to __enqueued__ directory after processing
                         try:
                             enqueued_dir = file_path.parent / "__enqueued__"
@@ -1362,6 +1513,51 @@ async def pipeline_enqueue_file(
                         return True, track_id
                         
                     except Exception as e:
+                        # Update status to FAILED if we have a doc_id
+                        if doc_id:
+                            try:
+                                current_time = datetime.now(timezone.utc).isoformat()
+                                # Get existing document data first to preserve all fields
+                                existing_doc = await rag.doc_status.get_by_id(doc_id)
+                                if existing_doc:
+                                    # Merge with existing data to preserve all fields
+                                    jsonl_doc_failed = {
+                                        doc_id: {
+                                            **existing_doc,
+                                            "status": DocStatus.FAILED,
+                                            "error_msg": f"[JSONL Import]Error processing JSONL file: {str(e)}",
+                                            "updated_at": current_time,
+                                        }
+                                    }
+                                else:
+                                    # If document doesn't exist (shouldn't happen), create a minimal record
+                                    jsonl_doc_failed = {
+                                        doc_id: {
+                                            "status": DocStatus.FAILED,
+                                            "content_summary": f"JSONL file: {file_path.name}",
+                                            "content_length": file_size,
+                                            "file_path": file_path.name,
+                                            "track_id": track_id,
+                                            "graph_tag": graph_tag or "default",
+                                            "chunks_count": None,
+                                            "chunks_list": [],
+                                            "created_at": current_time,
+                                            "updated_at": current_time,
+                                            "error_msg": f"[JSONL Import]Error processing JSONL file: {str(e)}",
+                                            "metadata": {
+                                                "file_type": "jsonl",
+                                                "source_id": "jsonl_import",
+                                            },
+                                        }
+                                    }
+                                await rag.doc_status.upsert(jsonl_doc_failed)
+                                logger.debug(f"Updated status to FAILED for JSONL file: {file_path.name}")
+                            except Exception as status_error:
+                                logger.warning(
+                                    f"Failed to update status to FAILED for JSONL file {file_path.name}: {status_error}"
+                                )
+                        
+                        # Also create error document record for consistency
                         error_files = [
                             {
                                 "file_path": str(file_path.name),
@@ -2233,8 +2429,14 @@ def create_document_routes(
                     track_id="",
                 )
 
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            # Use async file operations for better performance with large files
+            async with aiofiles.open(file_path, "wb") as buffer:
+                # Read file in chunks to avoid memory issues with large files
+                while True:
+                    chunk = await file.read(8192)  # 8KB chunks
+                    if not chunk:
+                        break
+                    await buffer.write(chunk)
 
             track_id = generate_track_id("upload")
 
