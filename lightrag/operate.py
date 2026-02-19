@@ -3180,6 +3180,40 @@ async def extract_entities(
         language=language,
     )
 
+    enable_parallel_domain_extraction = bool(
+        global_config.get("enable_parallel_domain_extraction", False)
+    )
+    parallel_domain_specs = PROMPTS.get("tcm_parallel_domain_extraction_specs", [])
+
+    def _merge_extraction_maps(
+        base_nodes: dict[str, list[dict[str, Any]]],
+        base_edges: dict[tuple[str, str], list[dict[str, Any]]],
+        incoming_nodes: dict[str, list[dict[str, Any]]],
+        incoming_edges: dict[tuple[str, str], list[dict[str, Any]]],
+    ) -> None:
+        """Merge extraction maps and prefer richer descriptions for duplicates."""
+        for entity_name, incoming_entities in incoming_nodes.items():
+            if not incoming_entities:
+                continue
+            if entity_name in base_nodes and base_nodes[entity_name]:
+                original_desc_len = len(base_nodes[entity_name][0].get("description", "") or "")
+                incoming_desc_len = len(incoming_entities[0].get("description", "") or "")
+                if incoming_desc_len > original_desc_len:
+                    base_nodes[entity_name] = list(incoming_entities)
+            else:
+                base_nodes[entity_name] = list(incoming_entities)
+
+        for edge_key, incoming_edge_records in incoming_edges.items():
+            if not incoming_edge_records:
+                continue
+            if edge_key in base_edges and base_edges[edge_key]:
+                original_desc_len = len(base_edges[edge_key][0].get("description", "") or "")
+                incoming_desc_len = len(incoming_edge_records[0].get("description", "") or "")
+                if incoming_desc_len > original_desc_len:
+                    base_edges[edge_key] = list(incoming_edge_records)
+            else:
+                base_edges[edge_key] = list(incoming_edge_records)
+
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
@@ -3201,57 +3235,27 @@ async def extract_entities(
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
-        # Get initial extraction
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**{**context_base, "input_text": content})
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
-
-        final_result, timestamp = await use_llm_func_with_cache(
-            entity_extraction_user_prompt,
-            use_llm_func,
-            system_prompt=entity_extraction_system_prompt,
-            llm_response_cache=llm_response_cache,
-            cache_type="extract",
-            chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
-        )
-
-        history = pack_user_ass_to_openai_messages(
-            entity_extraction_user_prompt, final_result
-        )
-
-        # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result,
-            chunk_key,
-            timestamp,
-            file_path,
-            tuple_delimiter=context_base["tuple_delimiter"],
-            completion_delimiter=context_base["completion_delimiter"],
-        )
-
-        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
-        if entity_extract_max_gleaning > 0:
-            glean_result, timestamp = await use_llm_func_with_cache(
-                entity_continue_extraction_user_prompt,
+        async def _run_prompt_pipeline(
+            system_prompt: str,
+            user_prompt: str,
+            continue_prompt: str,
+            cache_type: str,
+        ) -> tuple[dict[str, list[dict[str, Any]]], dict[tuple[str, str], list[dict[str, Any]]], list[str]]:
+            local_cache_keys: list[str] = []
+            final_result, timestamp = await use_llm_func_with_cache(
+                user_prompt,
                 use_llm_func,
-                system_prompt=entity_extraction_system_prompt,
+                system_prompt=system_prompt,
                 llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
+                cache_type=cache_type,
                 chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
+                cache_keys_collector=local_cache_keys,
             )
 
-            # Process gleaning result separately with file path
-            glean_nodes, glean_edges = await _process_extraction_result(
-                glean_result,
+            history = pack_user_ass_to_openai_messages(user_prompt, final_result)
+
+            local_nodes, local_edges = await _process_extraction_result(
+                final_result,
                 chunk_key,
                 timestamp,
                 file_path,
@@ -3259,36 +3263,135 @@ async def extract_entities(
                 completion_delimiter=context_base["completion_delimiter"],
             )
 
-            # Merge results - compare description lengths to choose better version
-            for entity_name, glean_entities in glean_nodes.items():
-                if entity_name in maybe_nodes:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_nodes[entity_name][0].get("description", "") or ""
+            # Keep existing behavior: run one continue round when max_gleaning > 0.
+            if entity_extract_max_gleaning > 0:
+                glean_result, timestamp = await use_llm_func_with_cache(
+                    continue_prompt,
+                    use_llm_func,
+                    system_prompt=system_prompt,
+                    llm_response_cache=llm_response_cache,
+                    history_messages=history,
+                    cache_type=cache_type,
+                    chunk_id=chunk_key,
+                    cache_keys_collector=local_cache_keys,
+                )
+                glean_nodes, glean_edges = await _process_extraction_result(
+                    glean_result,
+                    chunk_key,
+                    timestamp,
+                    file_path,
+                    tuple_delimiter=context_base["tuple_delimiter"],
+                    completion_delimiter=context_base["completion_delimiter"],
+                )
+                _merge_extraction_maps(
+                    local_nodes,
+                    local_edges,
+                    glean_nodes,
+                    glean_edges,
+                )
+
+            return local_nodes, local_edges, local_cache_keys
+
+        maybe_nodes: dict[str, list[dict[str, Any]]] = {}
+        maybe_edges: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        extraction_mode = "single"
+
+        if enable_parallel_domain_extraction and parallel_domain_specs:
+            extraction_mode = "parallel-domain"
+            domain_tasks = []
+            active_domain_specs = []
+            for domain_spec in parallel_domain_specs:
+                domain_id = domain_spec.get("domain_id")
+                domain_name = domain_spec.get("domain_name")
+                if not domain_id or not domain_name:
+                    continue
+
+                allowed_entity_types = "、".join(domain_spec.get("entity_types", []))
+                allowed_relation_types = "、".join(domain_spec.get("relation_types", []))
+                if not allowed_entity_types or not allowed_relation_types:
+                    continue
+
+                domain_context = {
+                    "domain_name": domain_name,
+                    "domain_description": domain_spec.get("domain_description", ""),
+                    "allowed_entity_types": allowed_entity_types,
+                    "allowed_relation_types": allowed_relation_types,
+                    "tuple_delimiter": context_base["tuple_delimiter"],
+                    "completion_delimiter": context_base["completion_delimiter"],
+                    "input_text": content,
+                }
+                domain_system_prompt = PROMPTS[
+                    "tcm_domain_entity_extraction_system_prompt"
+                ].format(**domain_context)
+                domain_user_prompt = PROMPTS[
+                    "tcm_domain_entity_extraction_user_prompt"
+                ].format(**domain_context)
+                domain_continue_prompt = PROMPTS[
+                    "tcm_domain_entity_continue_extraction_user_prompt"
+                ].format(**domain_context)
+                domain_cache_type = f"extract_{domain_id}"
+
+                active_domain_specs.append(domain_spec)
+                domain_tasks.append(
+                    asyncio.create_task(
+                        _run_prompt_pipeline(
+                            domain_system_prompt,
+                            domain_user_prompt,
+                            domain_continue_prompt,
+                            domain_cache_type,
+                        )
                     )
-                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
+                )
 
-                    if glean_desc_len > original_desc_len:
-                        maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
-                else:
-                    # New entity from gleaning stage
-                    maybe_nodes[entity_name] = list(glean_entities)
+            domain_results = (
+                await asyncio.gather(*domain_tasks, return_exceptions=True)
+                if domain_tasks
+                else []
+            )
 
-            for edge_key, glean_edges in glean_edges.items():
-                if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
+            successful_domains = 0
+            for domain_spec, domain_result in zip(active_domain_specs, domain_results):
+                if isinstance(domain_result, Exception):
+                    logger.warning(
+                        "Domain extraction failed for %s (%s): %s",
+                        domain_spec.get("domain_name"),
+                        domain_spec.get("domain_id"),
+                        domain_result,
                     )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
+                    continue
 
-                    if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edges)
-                    # Otherwise keep original version
-                else:
-                    # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
+                domain_nodes, domain_edges, domain_cache_keys = domain_result
+                _merge_extraction_maps(
+                    maybe_nodes,
+                    maybe_edges,
+                    domain_nodes,
+                    domain_edges,
+                )
+                cache_keys_collector.extend(domain_cache_keys)
+                successful_domains += 1
+
+            if successful_domains == 0:
+                raise RuntimeError(
+                    "Parallel domain extraction failed for all configured domains"
+                )
+        else:
+            entity_extraction_system_prompt = PROMPTS[
+                "entity_extraction_system_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_extraction_user_prompt = PROMPTS[
+                "entity_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+            entity_continue_extraction_user_prompt = PROMPTS[
+                "entity_continue_extraction_user_prompt"
+            ].format(**{**context_base, "input_text": content})
+
+            maybe_nodes, maybe_edges, single_cache_keys = await _run_prompt_pipeline(
+                entity_extraction_system_prompt,
+                entity_extraction_user_prompt,
+                entity_continue_extraction_user_prompt,
+                "extract",
+            )
+            cache_keys_collector.extend(single_cache_keys)
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:
@@ -3296,13 +3399,19 @@ async def extract_entities(
                 chunk_key,
                 text_chunks_storage,
                 cache_keys_collector,
-                "entity_extraction",
+                "entity_extraction_parallel"
+                if extraction_mode == "parallel-domain"
+                else "entity_extraction",
             )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
+        mode_tag = "D3" if extraction_mode == "parallel-domain" else "D1"
+        log_message = (
+            f"Chunk {processed_chunks} of {total_chunks} extracted "
+            f"{entities_count} Ent + {relations_count} Rel [{mode_tag}] {chunk_key}"
+        )
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:

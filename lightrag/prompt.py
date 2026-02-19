@@ -116,6 +116,185 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 <Output>
 """
 
+# Domain-specific extraction templates for Chinese TCM knowledge graph.
+# These prompts are designed for parallel multi-domain extraction while keeping
+# parser compatibility (first field must be literal `entity` / `relation`).
+PROMPTS["tcm_parallel_domain_extraction_specs"] = [
+    {
+        "domain_id": "material_formula",
+        "domain_name": "物质、属性与方药视域",
+        "domain_description": "聚焦中药、方剂、药性理论、制备与产地等知识",
+        "entity_types": [
+            "中药",
+            "方剂",
+            "药用部位",
+            "炮制方法",
+            "产地",
+            "四气",
+            "五味",
+            "归经",
+            "毒性",
+            "功效",
+            "剂型",
+            "制备方法",
+            "疾病",
+            "证候",
+            "其他",
+        ],
+        "relation_types": [
+            "方剂_组成_中药",
+            "方剂_剂型",
+            "方剂_制备方法",
+            "方剂_主治_证候",
+            "方剂_主治_疾病",
+            "中药_药用部位",
+            "中药_炮制方法",
+            "中药_产地",
+            "中药_四气",
+            "中药_五味",
+            "中药_归经",
+            "中药_毒性",
+            "中药_功效",
+            "中药_禁忌",
+        ],
+    },
+    {
+        "domain_id": "theory_pathology",
+        "domain_name": "基础理论与临床病理视域",
+        "domain_description": "聚焦理论、病因病机、疾病、证候、症状与舌脉等知识",
+        "entity_types": [
+            "理论概念",
+            "脏腑",
+            "生理功能",
+            "病因",
+            "病机",
+            "疾病",
+            "证候",
+            "症状",
+            "舌象",
+            "脉象",
+            "病理因素",
+            "部位",
+            "其他",
+        ],
+        "relation_types": [
+            "理论_解释_生理功能",
+            "脏腑_主司_生理功能",
+            "病因_导致_病机",
+            "病机_导致_证候",
+            "病机_导致_疾病",
+            "疾病_对应_证候",
+            "证候_表现_症状",
+            "证候_舌象",
+            "证候_脉象",
+            "症状_提示_证候",
+            "疾病_累及_部位",
+            "证候_病理因素",
+        ],
+    },
+    {
+        "domain_id": "diagnosis_intervention",
+        "domain_name": "诊疗方法与干预视域",
+        "domain_description": "聚焦四诊、治则治法、针灸推拿、康复器具及临床目标连接",
+        "entity_types": [
+            "诊法",
+            "诊断证据",
+            "治则",
+            "治法",
+            "干预方案",
+            "腧穴",
+            "针法",
+            "灸法",
+            "推拿法",
+            "康复器具",
+            "临床目标",
+            "疗效结局",
+            "疾病",
+            "证候",
+            "症状",
+            "部位",
+            "方剂",
+            "其他",
+        ],
+        "relation_types": [
+            "诊法_获取_诊断证据",
+            "诊断证据_支持_证候",
+            "治则_指导_治法",
+            "治法_治疗_证候",
+            "治法_治疗_疾病",
+            "干预方案_使用_方剂",
+            "干预方案_使用_针法",
+            "干预方案_使用_灸法",
+            "干预方案_使用_推拿法",
+            "针法_作用于_腧穴",
+            "灸法_作用于_腧穴",
+            "推拿法_作用于_部位",
+            "干预方案_使用_康复器具",
+            "腧穴_治疗_症状",
+            "干预方案_目标_临床目标",
+            "干预方案_产生_疗效结局",
+            "治法_禁忌_证候",
+        ],
+    },
+]
+
+PROMPTS["tcm_domain_entity_extraction_system_prompt"] = """---角色---
+你是中医知识图谱抽取专家。当前仅处理：{domain_name}
+
+---领域说明---
+{domain_description}
+
+---允许实体类型（闭集）---
+{allowed_entity_types}
+
+---允许关系类型（闭集）---
+{allowed_relation_types}
+
+---抽取规则---
+1) 只抽取文本中明确陈述的事实，不要推测，不要补全。
+2) 实体类型必须来自“允许实体类型”；无法归类时使用“其他”。
+3) 关系类型必须来自“允许关系类型”；无法归类时使用“其他”。
+4) 严禁输出与本领域无关的实体与关系。
+5) 输出第一列必须分别是字面量 `entity` 或 `relation`（系统解析要求）。
+
+---输出格式（严格）---
+- 实体（4列）：
+entity{tuple_delimiter}实体名{tuple_delimiter}实体类型{tuple_delimiter}实体描述
+- 关系（6列，兼容解析器）：
+relation{tuple_delimiter}源实体{tuple_delimiter}目标实体{tuple_delimiter}关系类型{tuple_delimiter}关系描述{tuple_delimiter}1.0
+
+---完成标记---
+最后一行输出：{completion_delimiter}
+"""
+
+PROMPTS["tcm_domain_entity_extraction_user_prompt"] = """---任务---
+请基于“{domain_name}”规则，从输入文本中抽取实体与关系。
+
+要求：
+1) 仅输出结构化结果，不要输出解释文字。
+2) 每行一条记录。
+3) 严格使用以下分隔符：{tuple_delimiter}
+4) 最后一行输出：{completion_delimiter}
+
+---输入文本---
+{input_text}
+"""
+
+PROMPTS["tcm_domain_entity_continue_extraction_user_prompt"] = """---任务---
+基于上一次“{domain_name}”抽取结果，只补充遗漏项或修正格式错误项。
+
+要求：
+1) 不要重复输出已正确的记录。
+2) 仍使用以下格式：
+   - entity{tuple_delimiter}实体名{tuple_delimiter}实体类型{tuple_delimiter}实体描述
+   - relation{tuple_delimiter}源实体{tuple_delimiter}目标实体{tuple_delimiter}关系类型{tuple_delimiter}关系描述{tuple_delimiter}1.0
+3) 仅输出结构化结果。
+4) 最后一行输出：{completion_delimiter}
+
+---输入文本---
+{input_text}
+"""
+
 PROMPTS["entity_extraction_examples"] = [
     """<Input Text>
 ```
