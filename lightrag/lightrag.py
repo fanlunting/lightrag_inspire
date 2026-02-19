@@ -217,6 +217,11 @@ class LightRAG:
     )
     """Maximum number of entity extraction attempts for ambiguous content."""
 
+    enable_parallel_domain_extraction: bool = field(
+        default=get_env_value("ENABLE_PARALLEL_DOMAIN_EXTRACTION", False, bool)
+    )
+    """Enable parallel multi-domain extraction prompts for each chunk."""
+
     force_llm_summary_on_merge: int = field(
         default=get_env_value(
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
