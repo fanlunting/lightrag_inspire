@@ -361,7 +361,7 @@ def chunking_by_file_format(
     # Handle CSV/TSV files
     if file_ext in [".csv", ".tsv", ".xlsx"]:
         delimiter = "," if file_ext == ".csv" else "\t"
-        lines = content.strip().split("\t")
+        lines = content.strip().split(delimiter)
         
         for index, line in enumerate(lines):
             line = line.strip()
@@ -3851,6 +3851,25 @@ async def _perform_kg_search(
             relationships_vdb,
             query_param,
         )
+        # Fallback: when global KG retrieval yields nothing, try vector chunks.
+        # This avoids returning no-context for datasets where relationship vectors are sparse.
+        if not global_relations and chunks_vdb:
+            vector_chunks = await _get_vector_context(
+                query,
+                chunks_vdb,
+                query_param,
+                query_embedding,
+            )
+            for i, chunk in enumerate(vector_chunks):
+                chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                if chunk_id:
+                    chunk_tracking[chunk_id] = {
+                        "source": "C",
+                        "frequency": 1,
+                        "order": i + 1,
+                    }
+                else:
+                    logger.warning(f"Vector chunk missing chunk_id: {chunk}")
 
     else:  # hybrid or mix mode
         if len(ll_keywords) > 0:
@@ -4450,12 +4469,14 @@ async def _build_query_context(
         chunks_vdb,
     )
 
-    if not search_result["final_entities"] and not search_result["final_relations"]:
-        if query_param.mode != "mix":
-            return None
-        else:
-            if not search_result["chunk_tracking"]:
-                return None
+    # If we can't retrieve *any* context (KG entities/relations nor vector chunks), stop early.
+    # Note: global mode can still succeed via vector chunks fallback.
+    if (
+        not search_result["final_entities"]
+        and not search_result["final_relations"]
+        and not search_result["vector_chunks"]
+    ):
+        return None
 
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
